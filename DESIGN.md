@@ -1,10 +1,11 @@
-# confd — Go-based NETCONF Server Design Proposal
+# confd — Go-based NETCONF Server & Single-Daemon Design
 
-> A Go implementation of a NETCONF server (`confd`) intended to be a lighter,
-> easier-to-extend alternative to Netopeer2. It reuses **sysrepo** as the
-> datastore back-end and **goyang** (openconfig/goyang) as the YANG schema
-> parser. Initial scope: read-only access to configuration and operational
-> data via NETCONF (RFC 6241), with edit/commit/NACM added in later phases.
+> `confd` is a Go-based NETCONF server backed by **sysrepo**, using
+> **[goyang](https://github.com/openconfig/goyang)** as the YANG schema
+> parser. It is a lighter, Go-native alternative to Netopeer2. It serves
+> NETCONF over SSH (RFC 6241/6242) and, in a single process, replaces both
+> `netopeer2-server` and `sysrepo-plugind` by embedding the plugin host
+> that loads Telekom sysrepo-plugins.
 
 ---
 
@@ -21,6 +22,8 @@
 - Expose data stored in **sysrepo** (running + operational datastores).
 - Validate GET reply payloads against the YANG schema parsed by **goyang**.
 - Produce standards-compliant `<ok/>` / `<rpc-error>` responses.
+- **Single-daemon mode**: confd replaces `sysrepo-plugind` by loading
+  `libsrplg-*.so` plugins via `dlopen` in the same process.
 
 ### 1.2 Non-Goals (for MVP)
 - `<edit-config>` / `<copy-config>` / `<delete-config>` / `<commit>` —
@@ -28,6 +31,8 @@
 - Notifications / `<create-subscription>` — phase 3.
 - Call-home (RFC 8071), TLS transport (RFC 7589) — phase 4.
 - RESTCONF — separate project, out of scope here.
+- Reimplementing any plugin in Go.
+- Replacing libyang/libsysrepo with a pure-Go datastore.
 
 ### 1.3 Phase 2+ Roadmap (sketch)
 1. `<edit-config>` + transactions (`<lock>`, `<commit>`, `<discard-changes>`).
@@ -38,53 +43,66 @@
 
 ---
 
-## 2. High-Level Architecture
+## 2. Key Insight: sysrepo is a SHM Library, Not a Server
+
+sysrepo has **no datastore server process**. It is a shared-memory library
+architecture:
+
+- `sr_connect()` (`src/sysrepo.c:197`) opens/creates POSIX SHM files
+  (`/dev/shm/sr_main`, `sr_ext`, `sr_mod`) under the configured repository
+  path. There is no `listen()`/`accept()`/socket — coordination is via SHM
+  + `pthread` mutexes + per-connection lock files.
+- Every process that calls `sr_connect()` is a peer; the first one to
+  acquire the create-lock initializes the SHM, subsequent ones attach.
+- The "daemons" sysrepo ships are all **consumers** of the SHM datastore,
+  not servers:
+  - `sysrepo-plugind` — loads plugins; calls `sr_connect` + `sr_session_start`
+    + `sr_plugin_init_cb` + `while(!exit) cond_wait` + cleanup.
+  - `sysrepo-notifd` — RFC 8639 notification relay; also just a `sr_connect` peer.
+  - `netopeer2-server` — the NETCONF front-end; also just a `sr_connect` peer.
+
+So "running sysrepo in a single process as confd" means **confd is the
+`sr_connect` peer that also owns the plugin lifecycle and serves NETCONF**,
+instead of spreading that across `netopeer2-server` + `sysrepo-plugind` +
+optionally `sysrepo-notifd`.
+
+| Component | Today (multi-process) | In `confd` (single process) | Mechanism |
+|---|---|---|---|
+| NETCONF server | `netopeer2-server` | **confd** | Go server |
+| sysrepo datastore | SHM files, no daemon | **SHM files, no daemon** | `sr_connect` opens them |
+| sysrepo client lib (libsysrepo) | linked into every consumer | linked **once** into confd | cgo |
+| sysrepo plugins | `sysrepo-plugind` loads `libsrplg-*.so` | **confd** loads them | `dlopen` plugin host (§6) |
+| `sysrepo-notifd` (RFC 8639) | separate daemon | absorbed **or** external | build tag (§8) |
+
+---
+
+## 3. High-Level Architecture
 
 ```
-              ┌────────────────────────────────────────────────────┐
-              │                     confd                          │
-              │                                                    │
-   SSH client  │  ┌────────────┐   ┌──────────────┐   ┌──────────┐ │
-   ────────────┼─▶│  transport │──▶│   netconf    │──▶│  rpc     │ │
-   (RFC 6242)  │  │  ssh/tcp   │   │  framing +   │   │ dispatch │ │
-              │  │            │   │  <hello>     │   │          │ │
-              │  └────────────┘   └──────────────┘   └────┬─────┘ │
-              │                                          │       │
-              │         ┌────────────────┐  ┌────────────▼─────┐ │
-              │         │     goyang      │  │   operations     │ │
-              │         │  schema cache   │◀─│ get/get-config/  │ │
-              │         │  (Entry trees)  │  │ get-schema/...   │ │
-              │         └────────┬───────┘  └─────────┬────────┘ │
-              │                  │                    │          │
-              │         ┌────────▼────────────────────▼────────┐ │
-              │         │             sysrepo adapter           │ │
-              │         │   sr_connect / sr_session_* /         │ │
-              │         │   sr_get_items / sr_get_item         │ │
-              │         │   (cgo bindings, per-session ctx)    │ │
-              │         └────────────────────┬─────────────────┘ │
-              └──────────────────────────────┼───────────────────┘
-                                             │  libsysrepo.so
-                                             ▼
-                                    ┌─────────────────┐
-                                    │     sysrepod     │
-                                    │  (datastores)   │
-                                    └─────────────────┘
+                 ┌──────────────────────────── confd (one process) ────────────────────────────┐
+                 │                                                                            │
+    SSH client    │  ┌────────────┐   ┌──────────────┐   ┌──────────┐                          │
+    ──────────────┼─▶│ transport  │──▶│  framing +   │──▶│  rpc     │──▶ operations ──┐         │
+    (RFC 6242)    │  │  ssh       │   │  <hello>     │   │ dispatch │                  │         │
+                 │  └────────────┘   └──────────────┘   └──────────┘                  ▼        │
+                 │                                                                 sysrepo   │
+                 │  ┌──────────────────────────────────────┐                  adapter (cgo)     │
+                 │  │ plugin host (replaces                │                         │          │
+                 │  │ sysrepo-plugind)                     │   sr_connect (opens SHM)│          │
+                 │  │  • dlopen libsrplg-ietf-system.so    │─────────────────────────┤          │
+                 │  │  • dlopen libsrplg-ietf-ifaces.so    │                         ▼          │
+                 │  │  • per-plugin sr_session_start       │                  ┌──────────┐    │
+                 │  │  • sr_plugin_init_cb (starts loop)   │                  │libsysrepo│    │
+                 │  │  • on SIGTERM: cleanup in reverse    │                  │(in-proc) │    │
+                 │  └──────────────────────────────────────┘                  └────┬─────┘    │
+                 │   schema.Cache (goyang) ◀─── filter validation                   │ SHM      │
+                 │                                                                    ▼          │
+                 │   Go runtime                                              /dev/shm/sr_*      │
+                 │   (signal handling, graceful shutdown)                                     │
+                 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1 Process model
-- **Single binary `confd`** with sub-commands:
-  - `confd serve`        — start the NETCONF listener.
-  - `confd schema list`  — dump loaded YANG modules (debug aid).
-  - `confd rpc ...`      — local RPC client for integration tests.
-- A long-lived listener accepts SSH connections. Each connection is a
-  goroutine. **One sysrepo connection per NETCONF session** is opened on
-  demand (sysrepo supports multiple concurrent connections/sessions).
-- Schema parsing with goyang is done **once at startup** and the resolved
-  `*yang.Entry` trees are cached in a `SchemaCache` (concurrent-read-safe).
-  The schema cache is the source of truth for `get-schema`, for building
-  the `<hello>` capability list, and for validating GET filter paths.
-
-### 2.2 Why goyang + sysrepo (and the impedance mismatch)
+### 3.1 Why goyang + sysrepo (and the impedance mismatch)
 
 | Concern                | goyang                                | sysrepo/libyang                      |
 |------------------------|---------------------------------------|--------------------------------------|
@@ -113,32 +131,34 @@ goyang is used to decide whether a filter refers to a valid path/capability.
 
 ---
 
-## 3. Component Breakdown
+## 4. Component Breakdown
 
-### 3.1 `transport` — NETCONF over SSH
+### 4.1 `transport` — NETCONF over SSH
 - Wraps `golang.org/x/crypto/ssh` for the SSH channel.
-- Implements RFC 6242 framing: EOM marker `[<chunk>...` framing, plus the
-  base-1.0 `\n]]>]]>\n` fallback during `<hello>`.
-- Configurable: host key path, authorized-keys file, bind address, port
-  (default 830), `max-sessions`, `idle-timeout`.
-- Optional debug transport (`netconf+tcp://`) for CI without SSH overhead.
+- Implements RFC 6242 framing: chunked framing, plus the base:1.0
+  `\n]]>]]>\n` fallback during `<hello>`.
+- Handles SSH `subsystem` requests (sent by `ssh -s ... netconf`) and
+  `exec` requests; rejects unknown channel requests.
+- Configurable: host key path, bind address, port (default 830), password auth.
+- In-memory `Pipe` transport for tests.
 - Interface:
   ```go
   type Transport interface {
-      Send(msg []byte) error               // frames + writes
-      Recv() ([]byte, error)               // un-frames, returns full rpc
+      ReadMessage() ([]byte, error)
+      WriteMessage(msg []byte) error
+      Framing() (*framing.Reader, *framing.Writer)
+      PeerUser() string
       Close() error
-      PeerUser() string                    // for NACM / audit
   }
   ```
 
-### 3.2 `framing` — RFC 6242 message codec
+### 4.2 `framing` — RFC 6242 message codec
 - Pure-Go chunked framing parser. Knows how to upgrade from 1.0 to 1.1 once
   both sides advertise the `:base:1.1` capability.
 - Exposes `Reader` / `Writer` that operate on top of the SSH channel's
   `io.Reader`/`io.Writer`.
 
-### 3.3 `hello` — capability negotiation
+### 4.3 `hello` — capability negotiation
 - On connect, send `<hello>` with:
   - `:base:1.1` (and `:base:1.0` for back-compat).
   - one URI per YANG module in the schema cache (module + revision + features).
@@ -147,18 +167,14 @@ goyang is used to decide whether a filter refers to a valid path/capability.
 - Parse peer `<hello>`, record the agreed capabilities, and switch the
   framing to 1.1 when both sides support it.
 
-### 3.4 `rpc` — message routing
+### 4.4 `rpc` — message routing
 - Decodes `<rpc message-id="..."> ... </rpc>`.
 - Looks up the inner operation QName against a `map[string]Handler`.
 - Each `Handler` returns either an `<ok/>`, a data tree reply, or an
   `<rpc-error>` with the right `error-tag`/`error-severity`/`error-info`.
-- Enforces a per-session `<lock>`-aware critical section so that concurrent
-  RPCs from the same session are serialized (NETCONF requires this).
-- All errors follow RFC 6241 Appendix A error taxonomy, reusing the
-  translation helpers that sysrepo already exposes via
-  `sr_error_format()`.
+- All errors follow RFC 6241 Appendix A error taxonomy.
 
-### 3.5 `operations` — protocol operation handlers
+### 4.5 `operations` — protocol operation handlers
 MVP handlers:
 
 | Operation            | Source            | Notes                                                  |
@@ -171,14 +187,7 @@ MVP handlers:
 | `close-session`      | local             | tears down SSH session.                                |
 | `kill-session`       | local             | kills a named session-id.                              |
 
-Each handler is a single file in `internal/operations/<op>.go` implementing:
-```go
-type Handler interface {
-    Handle(ctx context.Context, s *Session, r *RpcRequest) (*RpcReply, error)
-}
-```
-
-#### 3.5.1 Filter handling
+#### 4.5.1 Filter handling
 - **Subtree filter (RFC 6241 §6.4)**: convert to a libyang filter via
   `lyd_new_path` + select, or fall back to a Go-side walker when libyang
   cannot express the merge semantics. The MVP implements "Containment" and
@@ -189,15 +198,7 @@ type Handler interface {
 - Any filter path is first validated against the goyang schema cache so an
   unknown path yields `<rpc-error error-tag="unknown-element">`.
 
-### 3.6 `schema` — goyang cache
-```go
-type Cache struct {
-    modules map[string]*yang.Module   // by "module@rev"
-    entries  map[string]*yang.Entry    // top-level entries per module
-    caps     []string                  // capability URIs for <hello>
-    mu       sync.RWMutex
-}
-```
+### 4.6 `schema` — goyang cache
 - Loads every module installed in sysrepo. We get the module list from
   sysrepo itself (`sr_get_module_list`) — *sysrepo remains the source of
   truth for which modules are installed*, so `confd` and sysrepod never
@@ -211,52 +212,39 @@ type Cache struct {
 - The cache is rebuilt on SIGHUP and on a sysrepo "module installed"
   notification (phase 2).
 
-### 3.7 `sysrepoadapter` — cgo bindings to libsysrepo
-This is the single most awkward component because **there is no official Go
-binding for sysrepo**. Options, in order of preference:
-
-1. **CGo bindings written in-repo.** Thin `//export` wrappers in
-   `internal/sysrepoc/cgo.go` around the small surface we need:
-   `sr_connect`, `sr_session_start_*`, `sr_session_switch_ds`,
-   `sr_get_item`, `sr_get_items`, `sr_get_items_iter`, `sr_get_item_next`,
-   `sr_lock`, `sr_unlock`, `sr_session_stop`, `sr_disconnect`,
-   `sr_get_module_list`, `sr_get_module_info`, plus the `sr_error_*`
-   helpers. Wrappers return Go errors via `errors.New(sr_get_error(...))`.
-2. **Reuse sysrepo-cpp via a small C++ shim** — rejected: pulls in a C++
-   runtime and complicates the build.
-3. **Pure-Go reimplementation of the sysrepo IPC protocol** — rejected for
-   MVP; too brittle against upstream changes.
-
+### 4.7 `sysrepoadapter` — cgo bindings to libsysrepo
 The adapter exposes a Go-native interface that hides `lyd_node` and
 `sr_session_*`:
 
 ```go
 type Adapter interface {
-    Connect() (Conn, error)
+    Connect(ctx context.Context) (Conn, error)
 }
 
 type Conn interface {
     ListModules(ctx context.Context) ([]ModuleInfo, error)
-    ModulePath(ctx context.Context, name string) (string, error)   // for goyang
     OpenSession(ctx context.Context, user string) (Session, error)
+    Close() error
 }
 
 type Session interface {
     SwitchDS(ds Datastore) error
-    GetItems(ctx context.Context, xpath string) ([]DataNode, error)
-    GetItem (ctx context.Context, xpath string) (*DataNode, error)
-    Lock  (ctx context.Context, ds Datastore) error
-    Unlock(ctx context.Context, ds Datastore) error
+    CurrentDS() Datastore
+    Get(ctx context.Context, xpath string) (*DataNode, error)
+    Lock(ds Datastore) error
+    Unlock(ds Datastore) error
     Close() error
 }
-
-type DataNode struct {
-    XPath string
-    Value string
-    Type  yang.TypeKind
-    // ... leaf-list / children helpers
-}
 ```
+
+Two implementations:
+- `Mock` — in-memory YANG-modeled tree; used by tests and as the default
+  when libsysrepo headers aren't installed (pure Go, no cgo).
+- `CGo` — selected by the `sysrepo` build tag; a thin cgo shim over
+  libsysrepo (`sr_connect`, `sr_session_start`, `sr_session_switch_ds`,
+  `sr_get_items`, `sr_lock`, `sr_unlock`, `sr_session_stop`,
+  `sr_disconnect`). Also implements `RawConnProvider` to expose the raw
+  `sr_conn_ctx_t*` to the plugin host.
 
 `DataNode` is a thin Go value object; the underlying `lyd_node*` is owned by
 the adapter for the lifetime of the call and freed before returning. For the
@@ -264,112 +252,49 @@ MVP we return Go-side parsed values; in phase 2 we'll let the operations
 layer request a `lyd_node`-backed tree directly when XML serialization needs
 it (so we don't double-encode through Go).
 
-The adapter also implements the **error → `<rpc-error>` mapping** by walking
-`sr_error_format` output and emitting the matching `error-tag`/`error-info`.
+### 4.8 `pluginhost` — replaces `sysrepo-plugind`
+The plugin host is the "single daemon" piece. It `dlopen`s the shipped
+`libsrplg-*.so` artifacts, gives each a `sr_session_start`, calls
+`sr_plugin_init_cb` (which starts the plugin's own event loop), and on
+shutdown calls `sr_plugin_cleanup_cb` in reverse load order.
 
-### 3.8 `config` — runtime configuration
-A YAML/TOML file (`/etc/confd/confd.yaml`) plus CLI flags:
+```go
+type Host interface {
+    Start(conn sysrepoadapter.Conn, specs []Spec) error
+    Stop() error
+    Names() []string
+}
+```
+
+Three implementations:
+- `MockHost` — pure-Go mock for tests (records loaded plugins, supports
+  `fail-` prefix for init-failure simulation).
+- `NoopHost` — default build (returns `ErrNotAvailable`).
+- `CGoHost` — behind `sysrepo` build tag: `dlopen` + `sr_session_start` +
+  `sr_plugin_init_cb` on Start; `sr_plugin_cleanup_cb` + `sr_session_stop` +
+  `dlclose` in reverse order on Stop.
+
+### 4.9 `config` — runtime configuration
+CLI flags plus an optional YAML file:
 ```yaml
 listen:
   ssh:
     bind: 0.0.0.0:830
     host_key: /etc/confd/host_key
-    authorized_keys: /etc/confd/authorized_keys
-    idle_timeout: 30m
-  tcp:                       # optional, CI only
-    enabled: false
-    bind: 127.0.0.1:1830
-sysrepo:
-  socket: ""                 # default sysrepo socket
-  datastore_default: running
+    password: confd
 schema:
-  extra_paths: []            # extra YANG search dirs for goyang
-log:
-  level: info
-  format: json
+  yang_paths: [/etc/confd/yang, /usr/share/yang/modules]
+adapter: mock            # or "sysrepo"
+sysrepo_socket: ""
+plugins_dir: /usr/lib/confd/plugins
+plugins: [ietf-system, ietf-interfaces]
 ```
 
-### 3.9 `logging`
+### 4.10 `logging`
 - `log/slog` structured logger.
 - Per-session context fields: `session_id`, `peer_user`, `peer_addr`,
   `message_id`, `operation`.
 - An opt-in raw-RPC dump (gated behind `log.level=debug`) for development.
-
----
-
-## 4. Directory Layout
-
-```
-confd/
-├── cmd/
-│   └── confd/
-│       ├── main.go              # cobra root + `serve` subcommand
-│       └── serve.go
-├── internal/
-│   ├── config/                 # YAML + flag parsing
-│   ├── transport/
-│   │   ├── ssh.go              # RFC 6242 SSH transport
-│   │   ├── tcp.go              # plaintext transport (CI/debug)
-│   │   └── transport.go        # Transport interface
-│   ├── framing/
-│   │   └── framing.go          # RFC 6242 chunked + 1.0 fallback
-│   ├── hello/
-│   │   ├── hello.go            # capability negotiation
-│   │   └── capabilities.go     # capability builders
-│   ├── rpc/
-│   │   ├── rpc.go              # <rpc> parse, message-id, dispatch
-│   │   ├── error.go            # <rpc-error> builders per RFC 6241 App A
-│   │   └── handler.go          # Handler interface + registry
-│   ├── operations/
-│   │   ├── get.go
-│   │   ├── getconfig.go
-│   │   ├── getschema.go
-│   │   ├── lock.go
-│   │   ├── unlock.go
-│   │   ├── close_session.go
-│   │   ├── kill_session.go
-│   │   └── filter/             # subtree + xpath filter processing
-│   │       ├── subtree.go
-│   │       └── xpath.go
-│   ├── schema/
-│   │   ├── cache.go            # goyang-backed SchemaCache
-│   │   ├── loader.go           # discovers modules from sysrepo
-│   │   └── getschema.go        # RFC 6022 <get-schema> helpers
-│   ├── sysrepoadapter/         # public Go interface
-│   │   ├── adapter.go          # Adapter, Conn, Session
-│   │   ├── types.go            # DataNode, Datastore, ModuleInfo
-│   │   └── errors.go           # sysrepo → rpc-error mapping
-│   ├── sysrepoc/               # cgo layer (only file that knows libsysrepo)
-│   │   ├── cgo.go              # //cgo pkg-config: sysrepo
-│   │   ├── session.go
-│   │   ├── items.go
-│   │   ├── modules.go
-│   │   └── error.go
-│   ├── session/               # NETCONF session state
-│   │   └── session.go         # session-id, peer info, locks, ds
-│   └── server/
-│       └── server.go          # ties transport + rpc + adapter together
-├── pkg/                        # public (no internal), for tooling/tests
-│   └── netconf/               # message types if ever exposed
-├── yang/                       # in-tree YANG modules used by tests
-├── test/
-│   ├── integration/           # docker-compose with sysrepod + confd
-│   └── regression/            # captured rpc traces from Netopeer2
-├── go.mod
-├── go.sum
-├── Makefile
-├── README.md
-└── .github/workflows/ci.yml
-```
-
-Rationale:
-- `internal/sysrepoc` is the **only** package that imports `C`/libsysrepo. It
-  lives behind the `internal/sysrepoadapter` interface so the rest of the
-  codebase is testable without cgo.
-- `internal/schema` is the **only** package that imports
-  `github.com/openconfig/goyang`. The same isolation principle.
-- Everything else (`transport`, `framing`, `rpc`, `operations`) is pure Go
-  and easily unit-tested with the sysrepo adapter mocked.
 
 ---
 
@@ -379,18 +304,18 @@ Rationale:
 1. SSH transport receives a chunked `<rpc>`.
 2. `framing.Reader` reassembles the message; `rpc.Dispatch` parses it.
 3. `operations/getconfig` is invoked with `source=running`.
-4. `Session.SwitchDS(Running)` + `Adapter.GetItems("/")` returns the running
-   tree as a slice of `DataNode` (or, phase 2, a streamed `lyd_node` view).
+4. `Session.SwitchDS(Running)` + `Adapter.Get("/")` returns the running
+   tree as a `DataNode` tree.
 5. `filter/xpath` or `filter/subtree` selects the requested subset.
 6. Result is serialized to NETCONF XML — by libyang when possible, else by
-   a small Go encoder that walks the `DataNode` slice using the goyang
+   a small Go encoder that walks the `DataNode` tree using the goyang
    schema for element ordering and namespace assignment.
 7. `rpc.Reply` wraps it as `<rpc-reply message-id="…"><data>…</data></rpc-reply>`.
 
 ### 5.2 `get-schema`
 1. Validate the requested module-name/revision against `schema.Cache`.
 2. Look up the source text cached at load time.
-3. Return `<data>…base64-or-CDATA…</data>` with the right content type.
+3. Return `<data>…CDATA…</data>` with the right content type.
 
 ### 5.3 `lock`/`unlock`
 1. Translate datastore name → `sr_datastore_t`.
@@ -399,96 +324,361 @@ Rationale:
 
 ---
 
-## 6. Cross-Cutting Concerns
+## 6. Plugin Host Design (Single-Daemon)
 
-### 6.1 Sessions & concurrency
+### 6.1 The plugin contract: the key enabler
+
+Every Telekom plugin ships as a `libsrplg-<name>.so` that exports exactly:
+
+```c
+int  sr_plugin_init_cb   (sr_session_ctx_t *session, void **priv);
+void sr_plugin_cleanup_cb(sr_session_ctx_t *session, void  *priv);
+```
+
+- `init` registers all sysrepo subscriptions (operational-data providers,
+  change callbacks, RPC handlers) and **starts the plugin's own event loop
+  on an internal thread** (sdbus `IoContext`, libnl readers, timers).
+- `cleanup` joins that loop and unregisters.
+- `sysrepo-plugind`'s entire job is `dlopen` → `init` → `cond_wait` →
+  `cleanup` → `dlclose`.
+
+**Implication:** a Go host only has to own the **lifecycle** (connect /
+per-plugin session / init / cleanup / shutdown). It never drives a plugin's
+event loop. This is what makes a Go host a drop-in replacement for
+`sysrepo-plugind`.
+
+### 6.2 Loading: `dlopen`, not static link
+
+Static-linking C++ plugins into Go is fragile (C++ static-init order,
+duplicate sdbus-c++ singletons, ODR violations). We `dlopen` the shipped
+`libsrplg-*.so` artifacts exactly as `sysrepo-plugind` does:
+
+```go
+type Spec struct {
+    Name string   // "ietf-system"
+    Path string   // /usr/lib/confd/plugins/libsrplg-ietf-system.so
+}
+```
+
+The cgo layer exposes thin wrappers:
+```c
+void *cf_dlopen(const char *path);                              // handle or NULL
+int   cf_call_init(void *h, sr_session_ctx_t *s, void **priv);  // dlsym + call
+void  cf_call_cleanup(void *h, sr_session_ctx_t *s, void *priv);
+void  cf_dlclose(void *h);
+```
+
+### 6.3 Session model: one connection, one session per plugin
+
+```
+sr_connect  →  conn_ctx
+for each plugin:
+    sr_session_start(conn_ctx, SR_DS_RUNNING, &plugin_sess)
+    sr_plugin_init_cb(plugin_sess, &priv)    // starts plugin's internal loop
+    // keep (plugin_sess, priv) for cleanup
+```
+
+Rationale: isolation (a plugin that errors its session doesn't break
+NETCONF's sessions); matches `sysrepo-plugind`; cheap (SHM sessions are
+lightweight).
+
+### 6.4 Event-loop ownership
+
+**The host owns none.** Each plugin's `init` starts its own loop. The
+host:
+
+- Calls `init` on a `runtime.LockOSThread()` thread (so cgo + sdbus-c++
+  thread-local dispatchers are stable), then `UnlockOSThread`. The
+  plugin keeps using its own internal threads afterwards.
+- Does **not** run `sysrepo-plugind`'s `while(!exit) cond_wait` loop.
+  Go's main goroutine blocks on a shutdown `context.Context`; plugins
+  keep themselves alive via their own loops.
+
+### 6.5 Shutdown ordering (critical)
+
+```
+SIGINT/SIGTERM
+  → stop accepting NETCONF transports (drain in-flight RPCs, timeout)
+  → for each plugin in REVERSE load order:
+        cf_call_cleanup(handle, session, priv)   // joins plugin's loop
+        sr_session_stop(session)
+        cf_dlclose(handle)
+  → sr_disconnect()
+  → process exit
+```
+
+Rationale: in-flight RPCs may be served by plugin-provided operational
+data; once NETCONF is drained it's safe to tear plugins down. Reverse
+order handles plugins that depend on others (routing depends on
+interfaces) cleanly.
+
+### 6.6 Failure handling
+
+- A plugin whose `init` returns non-zero is **disabled, logged, and
+  skipped**; confd keeps starting the rest. (`sysrepo-plugind` aborts;
+  we improve on it.)
+- A plugin that crashes (SEGV in its loop) takes the process down in
+  v1. v2 hardening: fork+supervise per plugin — but that reintroduces
+  helper processes, so deferred.
+
+### 6.7 Integration with the server
+
+`server.Config` gains `PluginHost` + `PluginSpecs` fields:
+- `server.New` calls `host.Start(conn, specs)` after `Connect` and
+  before `ListenAndServe`.
+- `server.Close` calls `host.Stop()` before `conn.Close()` (plugins
+  torn down before datastore).
+
+`cmd/confd` gains:
+- `--plugins-dir=/usr/lib/confd/plugins` (where `libsrplg-*.so` live)
+- `--plugin=ietf-system` (repeatable allowlist; empty = load all)
+- `discoverPlugins()` builds `[]pluginhost.Spec` from the directory
+
+---
+
+## 7. Cross-Cutting Concerns
+
+### 7.1 Sessions & concurrency
 - Each NETCONF session = 1 goroutine + 1 sysrepo session.
 - Session-scoped mutex serializes RPCs (RFC 6241 §3.3).
 - Global `SessionRegistry` (id → `*Session`) for `kill-session` and for
   SSH-channel-level observability.
 
-### 6.2 Error handling
+### 7.2 Error handling
 - Internal errors carry `Op`, `Kind`, `Cause` plus optional `yang.Node`.
-- A single `toRpcError(err)` in `internal/rpc/error.go` converts them to the
+- A single `toRpcError(err)` in `internal/rpc/rpc.go` converts them to the
   `<rpc-error>` payload with `error-tag`, `error-severity`, optional
   `error-app-tag`, `error-path`, `error-info`, and `error-message`.
 
-### 6.3 Lifecycle
+### 7.3 Lifecycle
 - `context.Context` flows from `main` → server → session → adapter. SIGHUP
   rebuilds the schema cache; SIGTERM triggers graceful shutdown (close
-  listener, drain sessions, release locks).
+  listener, drain sessions, release locks, stop plugins, disconnect).
 
-### 6.4 Observability
+### 7.4 Observability
 - `expvar`/`pprof` endpoints off by default.
 - Prometheus metrics: `sessions_active`, `rpc_total{op,status}`,
   `rpc_duration_seconds{op}`, `sysrepo_errors_total{kind}`.
 
-### 6.5 Build
-- `go build -tags cgo ./...` (sysrepo needs cgo).
-- `//go:build !noci` guard for unit tests that don't need cgo.
-- `make test` runs `go test ./internal/...` (mocked adapter); `make
-  test-integration` brings up sysrepod in a container and exercises the
-  full SSH path.
+### 7.5 Build
+- `go build ./...` — pure Go (uses the Mock adapter, NoopHost).
+- `go build -tags sysrepo ./...` — cgo build against libsysrepo (needs
+  sysrepo headers + dlopen).
+- `make test` runs `go test ./...` (mocked adapter); all packages pass
+  without cgo or sysrepo installed.
 
 ---
 
-## 7. Why Not Just Use Netopeer2?
+## 8. `sysrepo-notifd` (RFC 8639)
+
+`sysrepo-notifd` implements configured subscription delivery (RFC 8639)
+— a UDP notification relay. It is **optional**:
+
+- **v1 (default): leave external.** confd does not yet implement
+  `<create-subscription>`; when it does, the notification relay can
+  stay as a separate process or be absorbed.
+- **v2 (build tag `notifd`): absorb into confd.** The notifd is also a
+  `sr_connect` peer with its own event loop, same pattern as the plugin
+  host.
+
+Either way, notifd is orthogonal to the "single daemon" goal — it serves
+a NETCONF feature confd doesn't implement yet.
+
+---
+
+## 9. YANG Provisioning
+
+sysrepo needs YANG modules installed in its datastore before plugins can
+subscribe. confd **self-provisions on first boot**:
+
+- confd ships a manifest (`/etc/confd/plugins.yaml`) listing each
+  enabled plugin and its YANG files + features to enable (mirrors the
+  per-plugin `sysrepoctl -i … --enable-feature …` blocks in the Telekom
+  README).
+- On startup, confd queries `sr_get_module_list`; for any manifest module
+  that's missing or lacks a required feature, confd uses the
+  `sr_install_module` API (or shells out to `sysrepoctl`) to install it.
+- Idempotent; matches what a packaging `%post` script would do, but
+  keeps "single daemon" honest — no separate setup service.
+
+---
+
+## 10. Build & Packaging
+
+The single-binary promise is **runtime**, not compile-time: the C++
+plugins are still built by their own CMake (they need sdbus-c++, libnl,
+etc.). The confd build produces:
+
+```
+confd                                  # one Go binary (links libsysrepo via cgo)
+/usr/lib/confd/plugins/
+  libsrplg-ietf-system.so              # from telekom/sysrepo-plugins build
+  libsrplg-ietf-interfaces.so
+  libsrplg-ietf-routing.so
+  libsrplg-ietf-hardware.so
+  libsrplg-os-metrics.so
+  libsrplg-ietf-access-control-list.so
+  libsrplg-ieee802-dot1q-bridge.so
+```
+
+**Deployment = `apt install confd && systemctl start confd`.** One unit,
+one process, one log. `sysrepo-plugind` and `netopeer2-server` units are
+not installed.
+
+The `Makefile`:
+```
+make build       # pure Go (mock adapter)
+make sysrepo     # cgo build against libsysrepo
+make test        # unit + integration tests
+make test-race   # with the race detector
+make vet
+make plugins     # cmake build of telekom/sysrepo-plugins -> build/plugins/*.so
+make install     # go install confd + cp plugins to $(DESTDIR)/usr/lib/confd/plugins
+```
+
+---
+
+## 11. Repository Layout
+
+```
+confd/
+├── cmd/confd/             # entrypoint (serve, schema-list)
+├── internal/
+│   ├── config/            # flags + defaults
+│   ├── transport/         # SSH + in-memory pipe transports
+│   │   ├── transport.go   # Transport interface
+│   │   └── ssh.go         # RFC 6242 SSH transport + subsystem handling
+│   ├── framing/           # RFC 6242 chunked framing
+│   ├── hello/             # <hello> + capability negotiation
+│   ├── rpc/               # <rpc> parse, dispatch, <rpc-error>
+│   ├── operations/        # get, get-config, get-schema, lock, unlock, sessions
+│   ├── schema/            # goyang-backed cache (the only goyang importer)
+│   ├── sysrepoadapter/    # Adapter interface + Mock + CGo (build tag)
+│   │   ├── adapter.go     # Adapter, Conn, Session, RawConnProvider
+│   │   ├── mock.go        # in-memory mock adapter
+│   │   ├── cgo_stub.go    # real cgo adapter (behind sysrepo tag)
+│   │   └── cgo_nosysrepo.go  # stub (default build)
+│   ├── pluginhost/        # replaces sysrepo-plugind
+│   │   ├── host.go        # Host interface + NoopHost
+│   │   ├── mock.go        # MockHost for tests
+│   │   ├── host_sysrepo.go # CGoHost (dlopen, behind sysrepo tag)
+│   │   ├── new.go         # New() -> NoopHost (default)
+│   │   └── new_sysrepo.go # New() -> CGoHost (sysrepo tag)
+│   ├── data/              # DataNode -> NETCONF XML encoder
+│   └── server/            # wiring + ServeTransport / ListenAndServe
+├── yang/confd-test.yang   # in-tree YANG module used by tests
+├── go.mod
+├── Makefile
+└── README.md
+```
+
+Rationale:
+- `internal/sysrepoadapter` is the **only** package that imports `C`/libsysrepo
+  (via the `sysrepo` build tag). The `Mock` adapter is pure Go and used by
+  all tests.
+- `internal/schema` is the **only** package that imports
+  `github.com/openconfig/goyang`. The same isolation principle.
+- `internal/pluginhost` is the **only** package that does `dlopen` (via the
+  `sysrepo` build tag). `MockHost` and `NoopHost` are pure Go.
+- Everything else (`transport`, `framing`, `rpc`, `operations`, `server`)
+  is pure Go and easily unit-tested with the sysrepo adapter and plugin
+  host mocked.
+
+---
+
+## 12. Key Data Flows (Single-Daemon Lifecycle)
+
+### 12.1 Startup
+```
+main()
+  → config.FromFlags()
+  → adapter = NewCGo(socket) or NewMock(nil)
+  → pluginHost = pluginhost.New()  (CGoHost or NoopHost)
+  → specs = discoverPlugins(pluginsDir, allowlist)
+  → server.New(ctx, Config{Adapter, PluginHost, PluginSpecs, ...})
+      → adapter.Connect()          → sr_connect (opens SHM)
+      → pluginHost.Start(conn, specs)
+          → for each spec: dlopen → sr_session_start → sr_plugin_init_cb
+      → operations.Register(dispatch, deps)
+  → server.ListenAndServe(ctx, sshCfg)
+      → accept SSH connections → ServeTransport per session
+```
+
+### 12.2 Shutdown (SIGINT/SIGTERM)
+```
+signal.NotifyContext cancels ctx
+  → listener.Close() (stops accepting)
+  → drain in-flight NETCONF sessions
+  → server.Close()
+      → pluginHost.Stop()
+          → for each plugin in REVERSE: sr_plugin_cleanup_cb → sr_session_stop → dlclose
+      → conn.Close()  → sr_disconnect
+```
+
+---
+
+## 13. Risks & Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| C++ plugin crashes (sdbus/libnl) abort the Go process | NETCONF server dies with the plugin | v1: accept (same as `sysrepo-plugind`); v2: fork+supervise per plugin |
+| Thread-local state in sdbus-c++ vs Go's `LockOSThread` | subtle deadlocks | keep init/cleanup on locked threads; never call cgo from arbitrary goroutines |
+| `sysrepod` still required for v1 | not truly single-process | documented; there is no `sysrepod` — sysrepo is SHM; confd is the only peer |
+| Plugin load order / inter-plugin dependencies | init failures | ordered manifest; reverse-order cleanup; per-plugin disable on init error |
+| YANG module version skew between confd's goyang cache and sysrepo SHM | capability drift | confd loads its goyang cache **from sysrepo's installed modules** (already the design), so they can't diverge |
+| dlopen + static libsysrepo symbol clashes | duplicate `sr_*` symbols | link libsysrepo **once** (in confd); plugins link it dynamically; verify with `ldd`/`nm` in CI |
+| SIGPIPE from a half-closed SSH channel | crash | Go runtime ignores SIGPIPE on non-stdout writes; verify, add `signal.Ignore(syscall.SIGPIPE)` |
+| First `sr_connect` initializes SHM; race with a concurrent `sysrepo-plugind` | double-init | don't run `sysrepo-plugind` alongside confd; confd is its replacement. Document this. |
+| SHM lifecycle: confd crash leaves stale SHM | next restart re-attaches | sysrepo already handles this (`sr_connect` re-creates/attaches); no new risk vs. today |
+| libyang XML serialization through cgo | lifetime management | start with Go-side encoder over `DataNode` for MVP; add cgo-direct path in phase 2 if benchmarks justify |
+| goyang vs libyang divergence on schema features | capability drift | treat sysrepo/libyang as authoritative for the data path; surface mismatches as warning + `<rpc-error>` |
+| NACM co-existence | sysrepo has its own NACM | for read-only MVP, NACM is `permit-all` from confd's side; phase 2 integrates with sysrepo's NACM |
+
+---
+
+## 14. Why Not Just Use Netopeer2?
 
 | Need                              | Netopeer2                  | confd                          |
 |-----------------------------------|----------------------------|--------------------------------|
 | Embeddable in a Go service        | no (C)                     | yes (library + binary)        |
 | Iterate on protocol features      | C/libyang idioms           | Go interfaces + table-driven   |
 | Share YANG with Go tooling        | requires shelling out      | goyang directly                |
+| Single-daemon (NETCONF + plugins) | 2+ processes               | 1 process                     |
 | Lightweight single-binary deploy  | sysrepo+netopeer2+libyang  | sysrepo+confd                 |
 | Test story for Go projects        | external                   | `go test` end-to-end          |
 
 We are not replacing Netopeer2 for everyone — we are building a Go-friendly
 NETCONF server whose first job is to read config/operational data from
-sysrepo with the same on-wire semantics as Netopeer2.
+sysrepo with the same on-wire semantics as Netopeer2, and whose second job
+is to absorb `sysrepo-plugind` into the same process.
 
 ---
 
-## 8. Risks & Open Questions
+## 15. Milestones
 
-1. **libyang XML serialization through cgo.** Passing `lyd_node*` across cgo
-   for direct XML emission is the cleanest path but requires careful lifetime
-   management. *Decision:* start with the Go-side encoder over `DataNode` for
-   the MVP; add the cgo-direct path in phase 2 only if benchmarks justify it.
-2. **goyang vs libyang divergence on schema features.** If goyang fails to
-   parse a module sysrepo accepts (or vice versa), `<get-schema>` and
-   capability advertisement can drift. *Mitigation:* treat sysrepo/libyang
-   as authoritative for the data path and surface mismatches as a warning
-   + an `unknown-schema` `<rpc-error>` for the affected `get-schema` call.
-3. **sysrepo API stability.** cgo bindings pin to a specific sysrepo
-   version; document the supported range and run the integration matrix in CI.
-4. **NACM co-existence.** sysrepo has its own NACM (ietf-netconf-acm). For the
-   read-only MVP, NACM is effectively `permit-all` from confd's side; phase 2
-   integrates with sysrepo's NACM rather than re-implementing it.
-5. **Default values / `with-defaults`.** sysrepo returns `lyd` with the
-   configured default-handling mode. We expose `:with-defaults` only after we
-   test the behavior end-to-end; for the MVP we return non-defaulted values
-   exactly as Netopeer2 does with `report-all` semantics.
+| Phase | Scope | Exit criteria |
+|---|---|---|
+| **M0** | skeleton: ssh transport + framing + hello | `nc` client can `<get/>` an empty datastore. |
+| **M1** | `get`, `get-config`, `get-schema`, `lock`, sessions | Passes Netopeer2's conformance tests for these ops. |
+| **M2** | filters (subtree + xpath), with-defaults, error map | Round-trips `ietf-system` / `ietf-interfaces` modules. |
+| **M3** | `edit-config`, `<commit>`, `<discard-changes>` | Netopeer2 `edit-config` tests pass against confd. |
+| **M4** | NACM, notifications, `<action>` | Full RFC 6241 base compliance; tagged 1.0. |
+| **P1** | cgo datastore adapter real (`sr_connect`, `sr_session_*`, `sr_get_items`, `sr_lock`) | confd reads live sysrepo running/operational data over SSH. |
+| **P2** | plugin host: `dlopen` + per-plugin session + init/cleanup + ordered shutdown | one Telekom plugin (`ietf-system`) loaded by confd; `<get>` returns real hostname/timezone. |
+| **P3** | multi-plugin, manifest, `--plugins-dir`/`--plugin`, YANG self-provisioning | all 7 Telekom plugins load; `systemctl start confd` is the only step. |
+| **P4** | (optional) absorb `sysrepo-notifd` behind `notifd` build tag | RFC 8639 configured subscriptions work without a separate process. |
+| **P5** | (optional) per-plugin fork+supervise hardening | a crashing plugin no longer takes down NETCONF. |
 
 ---
 
-## 9. Milestones (MVP → 1.0)
-
-| Milestone | Scope                                                  | Exit criteria                                                |
-|-----------|--------------------------------------------------------|--------------------------------------------------------------|
-| M0        | skeleton: ssh transport + framing + hello              | `nc` client can `<get/>` an empty datastore.                |
-| M1        | `get`, `get-config`, `get-schema`, `lock`, sessions    | Passes Netopeer2's conformance tests for these ops.         |
-| M2        | filters (subtree + xpath), with-defaults, error map   | Round-trips `ietf-system` / `ietf-interfaces` modules.      |
-| M3        | `edit-config`, `<commit>`, `<discard-changes>`        | Netopeer2 `edit-config` tests pass against confd.           |
-| M4        | NACM, notifications, `<action>`                        | Full RFC 6241 base compliance; tagged 1.0.                  |
-
----
-
-## 10. Summary
+## 16. Summary
 
 `confd` is a Go NETCONF server whose MVP focuses on **read-only retrieval of
 configuration and operational data** from sysrepo. It uses **goyang** as the
 schema layer (capabilities, `get-schema`, filter validation) and **sysrepo +
 libyang** as the data layer (datastore access, XML serialization, error
-formatting). The two are deliberately separated by interfaces so that each
-can be swapped, mocked, or replaced (notably a future pure-Go libyang or a
-pure-Go sysrepo IPC client) without touching the NETCONF protocol logic.
+formatting). In single-daemon mode it also **replaces `sysrepo-plugind`** by
+hosting Telekom sysrepo-plugins via `dlopen` in the same process. The three
+layers (schema, data, plugins) are deliberately separated by interfaces so
+that each can be swapped, mocked, or replaced without touching the NETCONF
+protocol logic.
