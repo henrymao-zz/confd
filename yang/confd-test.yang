@@ -1,0 +1,57 @@
+module confd-test {
+  namespace "urn:ietf:params:xml:ns:yang:confd-test";
+  prefix ct;
+
+  description
+    "Minimal YANG module used by confd's internal tests.";
+  revision 2024-01-01 {
+    description "Initial revision.";
+  }
+
+  container system {
+    description "Top-level system container.";
+    leaf hostname {
+      type string;
+      description "The system hostname.";
+    }
+    leaf-list domain-search {
+      type string;
+      description "DNS search domains.";
+    }
+    container interfaces {
+      list interface {
+        key "name";
+        leaf name {
+          type string;
+        }
+        leaf mtu {
+          type uint16;
+        }
+        leaf enabled {
+          type boolean;
+          default "true";
+        }
+        leaf oper-status {
+          type enumeration {
+            enum up;
+            enum down;
+            enum testing;
+          }
+          config false;
+        }
+      }
+    }
+  }
+
+  container state {
+    config false;
+    leaf uptime-seconds {
+      type uint64;
+    }
+    leaf load-average {
+      type decimal64 {
+        fraction-digits 2;
+      }
+    }
+  }
+}

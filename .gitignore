@@ -1,0 +1,5 @@
+/coverage.out
+/bin/
+/confd
+*.test
+*.prof
