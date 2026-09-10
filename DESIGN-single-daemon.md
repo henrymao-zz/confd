@@ -1,123 +1,141 @@
 # confd Single-Daemon Design: Embedding sysrepo + sysrepo-plugins
 
 > Companion to `DESIGN.md`. Goal: make `confd` a **single daemon** that
-> bundles three things that today run as separate processes — the
-> **sysrepo datastore**, the **Telekom sysrepo-plugins**, and the
-> **NETCONF server** — into one process so deployment is one binary,
-> one lifecycle, one set of signals, one log stream.
+> bundles the NETCONF server, the sysrepo datastore, and the Telekom
+> sysrepo-plugins into one process — one binary, one lifecycle, one set
+> of signals, one log stream.
+
+## 0. The key correction: there is no `sysrepod`
+
+The earlier draft of this document assumed a separate `sysrepod` datastore
+daemon. **That is wrong.** sysrepo has no datastore server process.
+
+sysrepo is a **shared-memory library architecture**, not a client-server one:
+
+- `sr_connect()` (`src/sysrepo.c:197`) opens/creates POSIX SHM files
+  (`/dev/shm/sr_main`, `sr_ext`, `sr_mod`) under the configured repository
+  path. There is no `listen()`/`accept()`/socket — coordination is via SHM
+  + `pthread` mutexes + per-connection lock files.
+- Every process that calls `sr_connect()` is a peer; the first one to
+  acquire the create-lock initializes the SHM, subsequent ones attach.
+- The "daemons" sysrepo ships are all **consumers** of the SHM datastore,
+  not servers:
+  - `sysrepo-plugind` — loads plugins; calls `sr_connect` + `sr_session_start`
+    + `sr_plugin_init_cb` + `while(!exit) cond_wait` + cleanup. See
+    `src/executables/sysrepo-plugind.c:560-600`.
+  - `sysrepo-notifd` — RFC 8639 notification relay; also just a `sr_connect` peer.
+  - `netopeer2-server` — the NETCONF front-end; also just a `sr_connect` peer.
+
+So "running sysrepo in a single process as confd" does not mean embedding a
+daemon — it means **confd is the `sr_connect` peer that also owns the plugin
+lifecycle and serves NETCONF**, instead of spreading that across
+`netopeer2-server` + `sysrepo-plugind` (+ optionally `sysrepo-notifd`).
+
+This is strictly simpler than the previous draft assumed.
 
 ## 1. What we are (and are not) bundling
 
-| Component | Today | In `confd` | Notes |
+| Component | Today (multi-process) | In `confd` (single process) | Mechanism |
 |---|---|---|---|
-| NETCONF server | `confd` (this repo) | ✅ already | unchanged |
-| sysrepo **client lib** (libsysrepo) | linked by confd's cgo adapter | ✅ in-process via cgo | datastore access |
-| sysrepo **plugins** (telekom/sysrepo-plugins) | `sysrepo-plugind` loads `libsrplg-*.so` | ✅ confd loads them | replaces `sysrepo-plugind` |
-| sysrepo **datastore daemon** (`sysrepod`) | separate process | ⚠️ see §3 | optional v2, recommended-external v1 |
+| NETCONF server | `netopeer2-server` | **confd** (already) | Go server from `DESIGN.md` |
+| sysrepo datastore | SHM files, no daemon | **SHM files, no daemon** | unchanged — `sr_connect` opens them |
+| sysrepo **client lib** (libsysrepo) | linked into every consumer | linked **once** into confd | cgo |
+| sysrepo **plugins** | `sysrepo-plugind` loads `libsrplg-*.so` | **confd** loads them | `dlopen` plugin host (§5) |
+| `sysrepo-notifd` (RFC 8639) | separate daemon | absorbed **or** external | build tag (§7) |
 
 **Non-goals**
 - Reimplementing any plugin in Go.
 - Replacing libyang/libsysrepo with a pure-Go datastore.
-- RESTCONF, Call-home (out of scope; orthogonal).
+- RESTCONF / Call-home (orthogonal, out of scope).
 
-The Telekom plugins are C++20 (`sdbus-c++`, `libnl`, `libsystemd`, `umgmt`,
-`libsensors`, …) and each has its own event loop (sdbus `IoContext`,
-netlink sockets, etc.). The design **does not** port them to Go; it hosts
-their compiled artifacts unchanged.
+## 2. The plugin contract: the key enabler
 
-## 2. The key enabler: the plugin contract
+Every Telekom plugin ships as a `libsrplg-<name>.so` that exports exactly:
 
-Every Telekom plugin is built in two forms (see `main.c` of any plugin):
-
-```
+```c
 int  sr_plugin_init_cb   (sr_session_ctx_t *session, void **priv);
 void sr_plugin_cleanup_cb(sr_session_ctx_t *session, void  *priv);
 ```
 
-- The `libsrplg-<name>.so` artifact exports exactly these two symbols.
 - `init` registers all sysrepo subscriptions (operational-data providers,
   change callbacks, RPC handlers) and **starts the plugin's own event loop
-  on an internal thread**.
+  on an internal thread** (sdbus `IoContext`, libnl readers, timers).
 - `cleanup` joins that loop and unregisters.
-- `sysrepo-plugind` itself does nothing more than `dlopen` each `.so`,
-  call `init`, sleep, and call `cleanup` on SIGINT — see the standalone
-  `main.c` in each plugin, which is a 40-line `connect → init → sleep →
-  cleanup → disconnect` loop.
+- `sysrepo-plugind`'s entire job is `dlopen` → `init` → `cond_wait` →
+  `cleanup` → `dlclose` (`src/executables/sysrepo-plugind.c:560-600`).
 
-**Implication:** a Go host only has to own the **lifecycle**
-(connect / per-plugin session / init / cleanup / shutdown). It does **not**
-have to drive any plugin's event loop. This is what makes embedding in a
-Go daemon tractable.
+**Implication:** a Go host only has to own the **lifecycle** (connect /
+per-plugin session / init / cleanup / shutdown). It never drives a plugin's
+event loop. This is what makes a Go host a drop-in replacement for
+`sysrepo-plugind`.
 
-## 3. Where does `sysrepod` go?
-
-sysrepo's datastore coordination lives in `sysrepod` (SHM, DS plugins,
-notification store, locks). Two options, decided by a build tag:
-
-### Option A — `sysrepod` stays external (v1, recommended)
-- `confd` connects to a running `sysrepod` via libsysrepo IPC, exactly like
-  Netopeer2 / sysrepo-plugind do today.
-- `confd` *is* the `sysrepo-plugind` replacement (loads plugins) **and** the
-  NETCONF server, but the datastore daemon is still its own process.
-- This is still "one daemon" from the **management plane** perspective
-  (the only process a user talks NETCONF to), and it's the safe default:
-  no fork of sysrepo's SHM lifecycle, no surprises under load.
-- **Deployment becomes 2 processes** (`sysrepod` + `confd`) instead of the
-  current 4 (`sysrepod` + `sysrepo-plugind` + `netopeer2-server` + each
-  standalone plugin binary).
-
-### Option B — embed `sysrepod` into `confd` (v2, stretch)
-- Take sysrepo's `sysrepod` `main()` and run it on a dedicated OS thread
-  spawned from cgo, sharing one process. The datastore SHM files still
-  exist on disk; only the coordinating daemon process is absorbed.
-- Requires sysrepo to expose its daemon entry as a callable
-  `sr_daemon_run(ctx)` with a stop fd. Upstream `sysrepod` is a normal
-  `main()`; we'd add a small shim patch or fork.
-- **True single process.** Worth it only when the deployment target
-  strictly forbids helper processes (e.g. a signed monolithic appliance
-  image). Not recommended for v1.
-
-The rest of this doc assumes **Option A**; the plugin-host layer is
-identical under Option B (only the connect target differs).
-
-## 4. Architecture
+## 3. Architecture (single process)
 
 ```
                  ┌──────────────────────────── confd (one process) ────────────────────────────┐
                  │                                                                            │
-  NETCONF ─────▶ │  transport ─▶ framing ─▶ rpc ─▶ operations ─▶ sysrepoadapter (cgo)         │
-  (SSH)          │                                          │                                  │
-                 │                                          │   sr_connect  ──┐                 │
-                 │  ┌──────────────────────────────────────┐ │                 │                │
-                 │  │ plugin host (cgo, replaces           │ │                 ▼                │
-                 │  │ sysrepo-plugind)                    │ │          ┌───────────────┐        │
-                 │  │  • dlopen libsrplg-ietf-system.so    │ │          │ libsysrepo    │        │
-                 │  │  • dlopen libsrplg-ietf-ifaces.so    │ └── 1:1 ──▶│ (in-process)  │        │
-                 │  │  • dlopen libsrplg-ietf-routing.so …  │            └──────┬────────┘        │
-                 │  │  • per-plugin sr_session_start        │                   │ IPC/SHM         │
-                 │  │  • sr_plugin_init_cb  (starts loop)  │                   ▼                 │
-                 │  │  • on SIGTERM: cleanup in reverse    │            ┌───────────────┐       │
-                 │  └──────────────────────────────────────┘            │   sysrepod    │       │
-                 │                                                      │  (external)   │       │
-                 │  Go runtime ──────────────────── runtime.LockOSThread│   for v1      │       │
-                 └──────────────────────────────────────────────────────┴───────────────┴───────┘
+   NETCONF ─────▶│  transport ─▶ framing ─▶ rpc ─▶ operations ─▶ sysrepoadapter (cgo)         │
+   (SSH)         │                                          │                                  │
+                 │                                          │                                  │
+                 │  ┌──────────────────────────────────────┐ │   sr_connect (opens SHM)        │
+                 │  │ plugin host (cgo, replaces            │ │       │                          │
+                 │  │ sysrepo-plugind)                     │ └───────┼──────────────────────────│
+                 │  │  • dlopen libsrplg-ietf-system.so     │         │                          │
+                 │  │  • dlopen libsrplg-ietf-ifaces.so     │         ▼                          │
+                 │  │  • dlopen libsrplg-ietf-routing.so …   │   ┌───────────────┐               │
+                 │  │  • per-plugin sr_session_start         │   │  libsysrepo   │               │
+                 │  │  • sr_plugin_init_cb (starts loop)    │   │  (in-process, │               │
+                 │  │  • on SIGTERM: cleanup in reverse     │   │   SHM peer)   │               │
+                 │  └──────────────────────────────────────┘   └───────┬───────┘               │
+                 │                                                     │                         │
+                 │   Go runtime                                        │ SHM files               │
+                 │   (signal handling, graceful shutdown)              ▼                         │
+                 │                                        /dev/shm/sr_main, sr_ext, sr_mod      │
+                 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Three cgo responsibilities, isolated in `internal/sysrepocgo`:
-1. **Datastore client** — the existing `CGo` adapter (`sr_connect`,
-   `sr_session_start`, `sr_get_items`, `sr_lock`, …).
-2. **Plugin host** — new: `dlopen`, symbol lookup, per-plugin session,
+There is **no separate datastore process**. confd calls `sr_connect()`,
+which opens the SHM. The plugins (loaded by confd) and the NETCONF
+operations (served by confd) share the same process's `libsysrepo` and
+coordinate through SHM + mutexes — exactly as `netopeer2-server` and
+`sysrepo-plugind` do today as separate processes, but without the IPC
+boundary.
+
+### cgo responsibilities (all in `internal/sysrepocgo`)
+
+1. **Datastore peer** — `sr_connect` / `sr_session_start` /
+   `sr_get_items` / `sr_lock` / `sr_disconnect`. Already the `CGo`
+   adapter from `DESIGN.md`.
+2. **Plugin host** — `dlopen` / `dlsym` / per-plugin session /
    `init`/`cleanup` lifecycle. Replaces `sysrepo-plugind`.
-3. **(v2) datastore daemon** — optional `sysrepod` embedding behind a tag.
+
+Both share one `sr_conn_ctx_t` (the SHM handle) with independent
+`sr_session_ctx_t`s — matching how `sysrepo-plugind` and `netopeer2-server`
+share SHM today.
+
+## 4. Why this is safe (no datastore daemon to break)
+
+Because sysrepo is SHM-based, the things that would normally make embedding
+a server risky don't apply:
+
+| Concern with embedding a server | sysrepo reality |
+|---|---|
+| Two servers fighting over a listen port | no port; SHM + file locks |
+| Need to fork/daemonize | `sysrepo-plugind` daemonizes itself, but `sr_connect` works fine in foreground; Go doesn't daemonize |
+| Server crash loses state | state lives in SHM files on disk, not in the process; a crashed confd restarts and re-attaches |
+| Multi-process concurrency | already handled by sysrepo's SHM locking; confd is just another peer |
+
+The only lifecycle difference from running `netopeer2-server` +
+`sysrepo-plugind` separately is that **one process** holds both the NETCONF
+listener and the plugin threads. The SHM coordination is identical.
 
 ## 5. Plugin host design
 
-### 5.1 Loading strategy: `dlopen`, not static link
+### 5.1 Loading: `dlopen`, not static link
 
-Static-linking the C++ plugins into a Go binary is fragile (C++ static
-init order, duplicate `sdbus-c++` singletons, ODR violations across
-plugins). Instead we **`dlopen` the shipped `libsrplg-*.so` artifacts**
-the same way `sysrepo-plugind` does:
+Static-linking C++ plugins into Go is fragile (C++ static-init order,
+duplicate sdbus-c++ singletons, ODR violations). We `dlopen` the shipped
+`libsrplg-*.so` artifacts exactly as `sysrepo-plugind` does:
 
 ```go
 // internal/pluginhost/host.go (Go side)
@@ -128,123 +146,136 @@ type Spec struct {
 type Loaded struct {
     Spec
     handle  unsafe.Pointer // dlopen handle (opaque)
-    init    func(sess, priv *unsafe.Pointer) C.int
-    cleanup func(sess, priv unsafe.Pointer)
-    priv    unsafe.Pointer
+    priv    unsafe.Pointer // plugin's private_data
+    session unsafe.Pointer // sr_session_ctx_t*
 }
 ```
 
-The cgo layer exposes:
+The cgo layer exposes thin wrappers:
 ```c
-void *cf_dlopen(const char *path);          // returns handle or NULL
-int   cf_call_init(void *h, sr_session_ctx_t *s, void **priv);
+void *cf_dlopen(const char *path);                              // handle or NULL
+int   cf_call_init(void *h, sr_session_ctx_t *s, void **priv);  // dlsym + call
 void  cf_call_cleanup(void *h, sr_session_ctx_t *s, void *priv);
 void  cf_dlclose(void *h);
 ```
 
-`cf_call_init` looks up `sr_plugin_init_cb` via `dlsym` and invokes it.
+### 5.2 Session model: one connection, one session per plugin
 
-### 5.2 Session ownership
+```
+sr_connect  →  conn_ctx
+for each plugin:
+    sr_session_start(conn_ctx, SR_DS_RUNNING, &plugin_sess)
+    sr_plugin_init_cb(plugin_sess, &priv)    // starts plugin's internal loop
+    // keep (plugin_sess, priv) for cleanup
+```
 
-Two acceptable models; we pick **shared connection, per-plugin session**:
-
-| Model | Pros | Cons | Decision |
-|---|---|---|---|
-| One session, all plugins share it | simplest | a plugin that stops the session breaks everyone; subscription cleanup messy | rejected |
-| **One connection, one session per plugin** | isolation; matches `sysrepo-plugind` | more SHM sessions | **chosen** |
-| One connection + one session, then `sr_session_dup` | middle ground | not needed for v1 | later |
-
-So: `sr_connect` once → for each plugin `sr_session_start` → `init(sess,
-&priv)` → keep `sess`+`priv` for cleanup.
+Rationale: isolation (a plugin that errors its session doesn't break
+NETCONF's sessions); matches `sysrepo-plugind`; cheap (SHM sessions are
+lightweight).
 
 ### 5.3 Event-loop ownership
 
-**The host owns none.** Each plugin's `init` starts its own loop
-(sdbus `IoContext`, libnl readers, timer threads). The host only:
+**The host owns none.** Each plugin's `init` starts its own loop. The
+host:
 
-- Spawns **one locked OS thread per plugin's init call** so that cgo +
-  any thread-local state (sdbus-c++ uses thread-local dispatchers) stays
-  stable: `runtime.LockOSThread()` for the duration of `init`, then
-  `UnlockOSThread`. The plugin keeps using its own internal threads
-  afterwards.
-- Does **not** run a `while(!exit) sleep(1)` loop. Go's main goroutine
-  blocks on a shutdown context; plugins keep themselves alive via their
-  own loops.
+- Calls `init` on a `runtime.LockOSThread()` thread (so cgo + sdbus-c++
+  thread-local dispatchers are stable), then `UnlockOSThread`. The
+  plugin keeps using its own internal threads afterwards.
+- Does **not** run `sysrepo-plugind`'s `while(!exit) cond_wait` loop.
+  Go's main goroutine blocks on a shutdown `context.Context`; plugins
+  keep themselves alive via their own loops.
 
 ### 5.4 Shutdown ordering (critical)
 
 ```
 SIGINT/SIGTERM
-  → stop accepting NETCONF transports (drain in-flight RPCs with timeout)
+  → stop accepting NETCONF transports (drain in-flight RPCs, timeout)
   → for each plugin in REVERSE load order:
-        cf_call_cleanup(handle, session, priv)   // joins plugin loop
+        cf_call_cleanup(handle, session, priv)   // joins plugin's loop
         sr_session_stop(session)
+        cf_dlclose(handle)
   → sr_disconnect()
   → process exit
 ```
 
 Rationale: in-flight RPCs may be served by plugin-provided operational
 data; once NETCONF is drained it's safe to tear plugins down. Reverse
-order handles plugins that depend on others (e.g. routing depends on
+order handles plugins that depend on others (routing depends on
 interfaces) cleanly.
 
 ### 5.5 Failure handling
 
-- A plugin whose `init` returns non-zero is **disabled**, logged, and
-  skipped; confd keeps starting the rest. `sysrepo-plugind` aborts on this;
-  we improve on it.
-- A plugin that crashes (SEGV in its loop) takes the whole process down
-  in v1. v2 hardening: run each plugin in a forked child supervised by
-  confd (see §9 risks) — but that re-introduces processes, so deferred.
+- A plugin whose `init` returns non-zero is **disabled, logged, and
+  skipped**; confd keeps starting the rest. (`sysrepo-plugind` aborts;
+  we improve on it.)
+- A plugin that crashes (SEGV in its loop) takes the process down in
+  v1. v2 hardening: fork+supervise per plugin — but that reintroduces
+  helper processes, so deferred (§9).
 
 ## 6. Integration with the existing `sysrepoadapter`
 
-`internal/sysrepoadapter/adapter.go`'s `CGo` struct becomes the host:
+The `CGo` struct in `internal/sysrepoadapter/adapter.go` gains a plugin
+host:
 
 ```
 CGo
- ├── Connect(ctx)  → sr_connect, store conn, hand to plugin host
- ├── OpenSession   → sr_session_start (used by per-RPC operations)
+ ├── Connect(ctx)  → sr_connect (opens SHM), store conn, start plugin host
+ ├── OpenSession   → sr_session_start (for per-RPC operations)
  ├── pluginHost    → *pluginhost.Host (new field)
  └── Close()       → pluginHost.Stop() then sr_disconnect
 ```
 
 `cmd/confd` gains:
 - `--plugins-dir=/usr/lib/confd/plugins` (where `libsrplg-*.so` live)
-- `--plugin=ietf-system` (repeatable; allowlist; empty = load all)
-- `--sysrepo-socket=…` (already there)
+- `--plugin=ietf-system` (repeatable allowlist; empty = load all in dir)
+- `--sysrepo-socket=…` (already there; affects SHM repo path)
 
-At `server.New`, after `Connect`, if `--adapter=sysrepo` and a plugins dir
-is configured, confd calls `pluginHost.Start(conn, specs)` before
-`ListenAndServe`. The plugin host and the NETCONF server share the same
-`libsysrepo` connection (different sessions).
+At `server.New`, after `Connect`, if a plugins dir is configured confd
+calls `pluginHost.Start(conn, specs)` **before** `ListenAndServe`. The
+plugin host and the NETCONF server share the same `sr_conn_ctx_t` with
+independent sessions.
 
-## 7. YANG provisioning
+## 7. `sysrepo-notifd` (RFC 8639)
 
-sysrepo still needs the YANG modules installed in its datastore before
-plugins can subscribe. We keep the Telekom `plugins/install_yang_modules.sh`
-model but make confd **self-provision on first boot**:
+`sysrepo-notifd` implements configured subscription delivery (RFC 8639)
+— a UDP notification relay. It is **optional**:
 
-- confd ships a manifest (`/etc/confd/plugins.yaml`) listing each enabled
-  plugin and its YANG files + features to enable (mirrors the per-plugin
-  `sysrepoctl -i … --enable-feature …` block in the Telekom README).
-- On startup, confd queries `sr_get_module_list`; for any module in the
-  manifest that is missing or lacks a required feature, confd shells out to
-  `sysrepoctl` (or, in v2, uses the `sr_install_module` API directly) to
-  install it.
-- This is idempotent and matches what a packaging `%post` script would do,
-  but it keeps "single daemon" honest: no separate setup service.
+- **v1 (default): leave external.** confd does not yet implement
+  `<create-subscription>`; when it does, the notification relay can
+  stay as a separate process or be absorbed.
+- **v2 (build tag `notifd`): absorb into confd.** The notifd is also a
+  `sr_connect` peer with its own event loop, same pattern as the plugin
+  host. A `notifd` build tag compiles it in; otherwise confd runs
+  without it.
 
-## 8. Build & packaging
+Either way, notifd is orthogonal to the "single daemon" goal — it serves
+a NETCONF feature confd doesn't implement yet.
 
-The single-binary promise is honored at **runtime**, not at compile time:
-the C++ plugins are still built by their own CMake (they need `sdbus-c++`,
-`libnl`, etc.). The confd build produces:
+## 8. YANG provisioning
+
+sysrepo needs YANG modules installed in its datastore before plugins can
+subscribe. confd **self-provisions on first boot**:
+
+- confd ships a manifest (`/etc/confd/plugins.yaml`) listing each
+  enabled plugin and its YANG files + features to enable (mirrors the
+  per-plugin `sysrepoctl -i … --enable-feature …` blocks in the Telekom
+  README).
+- On startup, confd queries `sr_get_module_list`; for any manifest module
+  that's missing or lacks a required feature, confd uses the
+  `sr_install_module` API (or shells out to `sysrepoctl`) to install it.
+- Idempotent; matches what a packaging `%post` script would do, but
+  keeps "single daemon" honest — no separate setup service.
+
+## 9. Build & packaging
+
+The single-binary promise is **runtime**, not compile-time: the C++
+plugins are still built by their own CMake (they need sdbus-c++, libnl,
+etc.). The confd build produces:
 
 ```
-confd                              # one Go binary (statically links libsysrepo if possible)
+confd                                  # one Go binary (links libsysrepo via cgo)
 /usr/lib/confd/plugins/
-  libsrplg-ietf-system.so          # from telekom/sysrepo-plugins build
+  libsrplg-ietf-system.so              # from telekom/sysrepo-plugins build
   libsrplg-ietf-interfaces.so
   libsrplg-ietf-routing.so
   libsrplg-ietf-hardware.so
@@ -253,50 +284,50 @@ confd                              # one Go binary (statically links libsysrepo 
   libsrplg-ieee802-dot1q-bridge.so
 ```
 
-Packaging options (pick per distro):
-1. **One `.deb`/`.rpm`** that `Depends: sysrepod` and bundles the plugin
-   `.so`s. Closest to "single daemon" from the operator's view: `apt
-   install confd && systemctl start confd`.
-2. **One OCI image**: `confd` + plugin `.so`s + `sysrepod` in one container
-   (v2 with Option B), or `confd` + plugin `.so`s talking to a sidecar
-   `sysrepod` (v1).
+**Deployment = `apt install confd && systemctl start confd`.** One unit,
+one process, one log. `sysrepo-plugind` and `netopeer2-server` units are
+not installed.
 
-The Go `Makefile` gains:
+The `Makefile` gains:
 ```
 make plugins     # cmake build of telekom/sysrepo-plugins -> build/plugins/*.so
 make install     # go install confd + cp plugins to $(DESTDIR)/usr/lib/confd/plugins
 ```
 
-## 9. Risks & mitigations
+## 10. Risks & mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| C++ plugin crashes (sdbus/libnl) abort the Go process | NETCONF server dies with the plugin | v1: accept; v2: fork+supervise per plugin (re-introduces helper procs, trade-off documented) |
-| Thread-local state in sdbus-c++ vs Go's `LockOSThread` | subtle deadlocks | keep init/cleanup on locked threads; never call cgo from arbitrary goroutines for a plugin's callbacks |
-| `sysrepod` still required for v1 | not truly single-process | documented; Option B is the path to remove it |
+| C++ plugin crashes (sdbus/libnl) abort the Go process | NETCONF server dies with the plugin | v1: accept (same as `sysrepo-plugind`); v2: fork+supervise per plugin |
+| Thread-local state in sdbus-c++ vs Go's `LockOSThread` | subtle deadlocks | keep init/cleanup on locked threads; never call cgo from arbitrary goroutines |
 | Plugin load order / inter-plugin dependencies | init failures | ordered manifest; reverse-order cleanup; per-plugin disable on init error |
-| YANG module version skew between confd's goyang cache and sysrepo | capability drift | confd loads its goyang cache **from sysrepo's installed modules** (already the design), so they can't diverge |
+| YANG module version skew between confd's goyang cache and sysrepo SHM | capability drift | confd loads its goyang cache **from sysrepo's installed modules** (already the design), so they can't diverge |
 | dlopen + static libsysrepo symbol clashes | duplicate `sr_*` symbols | link libsysrepo **once** (in confd); plugins link it dynamically; verify with `ldd`/`nm` in CI |
-| SIGPIPE from a half-closed SSH channel killing the process | crash | plugin `main.c` already does `signal(SIGPIPE, SIG_IGN)`; confd's Go runtime ignores SIGPIPE on non-stdout writes — verify, add `signal.Ignore(syscall.SIGPIPE)` |
+| SIGPIPE from a half-closed SSH channel | crash | Go runtime ignores SIGPIPE on non-stdout writes; verify, add `signal.Ignore(syscall.SIGPIPE)` |
+| First `sr_connect` initializes SHM; race with a concurrent `sysrepo-plugind` | double-init | don't run `sysrepo-plugind` alongside confd; confd is its replacement. Document this. |
+| SHM lifecycle: confd crash leaves stale SHM | next restart re-attaches | sysrepo already handles this (`sr_connect` re-creates/attaches); no new risk vs. today |
 
-## 10. Phasing
+## 11. Phasing
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | **P1** | cgo datastore adapter real (`sr_connect`, `sr_session_*`, `sr_get_items`, `sr_lock`) | confd reads live sysrepo running/operational data over SSH; Netopeer2 conformance for `<get>`/`<get-config>` |
 | **P2** | plugin host: `dlopen` + per-plugin session + init/cleanup + ordered shutdown | one Telekom plugin (`ietf-system`) loaded by confd; `<get>` returns real hostname/timezone from the plugin |
-| **P3** | multi-plugin, manifest, `--plugins-dir`/`--plugin`, self-provisioning | all 7 Telekom plugins load; `systemctl start confd` is the only step |
-| **P4** | (optional) embed `sysrepod` (Option B) | true single-process image; no `sysrepod` unit |
+| **P3** | multi-plugin, manifest, `--plugins-dir`/`--plugin`, YANG self-provisioning | all 7 Telekom plugins load; `systemctl start confd` is the only step |
+| **P4** | (optional) absorb `sysrepo-notifd` behind `notifd` build tag | RFC 8639 configured subscriptions work without a separate process |
 | **P5** | (optional) per-plugin fork+supervise hardening | a crashing plugin no longer takes down NETCONF |
 
-## 11. Why this shape
+## 12. Why this shape
 
-- It **reuses the Telekom plugins verbatim** (no Go reimplementation), so we
-  inherit their RFC compliance and OS integration (netlink, systemd-resolved
-  via sdbus, lm-sensors, …) for free.
-- It **replaces `sysrepo-plugind` and `netopeer2-server`** with one Go
-  process — the actual "single daemon" win — while keeping `sysrepod`
-  external in v1 for datastore safety.
+- **There is no `sysrepod` to embed.** sysrepo is a SHM library; `sr_connect`
+  opens the datastore. "Single process" just means confd is the only peer,
+  not that we absorb a server.
+- **confd replaces `sysrepo-plugind`** by hosting the plugins (`dlopen` +
+  `init`/`cleanup`), and **replaces `netopeer2-server`** by serving NETCONF —
+  both already-just-a-`sr_connect`-peer roles — in one Go process.
+- The Telekom plugins are **reused verbatim** (no Go reimplementation); we
+  inherit their RFC compliance and OS integration (netlink, sdbus, lm-sensors)
+  for free.
 - The plugin contract (`init`/`cleanup` + self-managed loop) maps cleanly
   onto Go's cgo + `LockOSThread`, so the host is a small (~300 LoC) layer.
 - The `sysrepoadapter` interface from `DESIGN.md` is unchanged; only the
