@@ -8,11 +8,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/example/confd/internal/data"
 	"github.com/example/confd/internal/hello"
 	"github.com/example/confd/internal/operations"
+	"github.com/example/confd/internal/pluginhost"
 	"github.com/example/confd/internal/rpc"
 	"github.com/example/confd/internal/schema"
 	"github.com/example/confd/internal/sysrepoadapter"
@@ -30,17 +32,23 @@ type Config struct {
 	// Modules is the list of module infos to advertise when using the mock
 	// adapter. Ignored when Adapter is non-nil.
 	Modules []sysrepoadapter.ModuleInfo
+	// PluginHost is the plugin lifecycle manager (replaces sysrepo-plugind).
+	// If nil, no plugins are loaded.
+	PluginHost pluginhost.Host
+	// PluginSpecs is the list of plugins to load via PluginHost on startup.
+	PluginSpecs []pluginhost.Spec
 }
 
 // Server is a runnable NETCONF server.
 type Server struct {
-	cfg      Config
-	cache    *schema.Cache
-	adapter  sysrepoadapter.Adapter
-	conn     sysrepoadapter.Conn
-	encoder  *data.Encoder
-	dispatch *rpc.Dispatcher
-	reg      *operations.SessionRegistry
+	cfg        Config
+	cache      *schema.Cache
+	adapter    sysrepoadapter.Adapter
+	conn       sysrepoadapter.Conn
+	encoder    *data.Encoder
+	dispatch   *rpc.Dispatcher
+	reg        *operations.SessionRegistry
+	pluginHost pluginhost.Host
 }
 
 // New builds a Server from cfg.
@@ -59,6 +67,17 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: connect adapter: %w", err)
 	}
+
+	// --- plugin host (replaces sysrepo-plugind) ---------------------------
+	ph := cfg.PluginHost
+	if ph != nil && len(cfg.PluginSpecs) > 0 {
+		if err := ph.Start(conn, cfg.PluginSpecs); err != nil {
+			slog.Warn("server: plugin host start failed", "error", err)
+		} else {
+			slog.Info("server: plugins loaded", "names", ph.Names())
+		}
+	}
+
 	reg := operations.NewSessionRegistry()
 	encoder := data.New(cache)
 	dispatch := rpc.NewDispatcher()
@@ -70,21 +89,26 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 	operations.Register(dispatch, deps)
 	return &Server{
-		cfg:      cfg,
-		cache:    cache,
-		adapter:  adapter,
-		conn:     conn,
-		encoder:  encoder,
-		dispatch: dispatch,
-		reg:      reg,
+		cfg:        cfg,
+		cache:      cache,
+		adapter:    adapter,
+		conn:       conn,
+		encoder:    encoder,
+		dispatch:   dispatch,
+		reg:        reg,
+		pluginHost: ph,
 	}, nil
 }
 
 // Cache returns the server's schema cache (for inspection / tests).
 func (s *Server) Cache() *schema.Cache { return s.cache }
 
-// Close releases server-wide resources.
+// Close releases server-wide resources. Plugins are stopped in
+// reverse load order before the datastore connection is closed.
 func (s *Server) Close() error {
+	if s.pluginHost != nil {
+		_ = s.pluginHost.Stop()
+	}
 	if s.conn != nil {
 		return s.conn.Close()
 	}

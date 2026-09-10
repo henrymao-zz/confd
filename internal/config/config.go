@@ -21,6 +21,12 @@ type Config struct {
 	Adapter string `yaml:"adapter"`
 	// SysrepoSocket is the path to the sysrepo socket (for the sysrepo adapter).
 	SysrepoSocket string `yaml:"sysrepo_socket"`
+	// PluginsDir is the directory containing libsrplg-*.so plugin
+	// artifacts (for the sysrepo adapter). Empty = no plugins.
+	PluginsDir string `yaml:"plugins_dir"`
+	// Plugins is an allowlist of plugin names to load. Empty = load all
+	// *.so files in PluginsDir.
+	Plugins []string `yaml:"plugins"`
 }
 
 // Default returns the default configuration.
@@ -52,6 +58,10 @@ func FromFlags(base Config, args []string) (Config, error) {
 			base.Adapter = strings.TrimPrefix(a, "--adapter=")
 		case strings.HasPrefix(a, "--sysrepo-socket="):
 			base.SysrepoSocket = strings.TrimPrefix(a, "--sysrepo-socket=")
+		case strings.HasPrefix(a, "--plugins-dir="):
+			base.PluginsDir = strings.TrimPrefix(a, "--plugins-dir=")
+		case strings.HasPrefix(a, "--plugin="):
+			base.Plugins = append(base.Plugins, strings.TrimPrefix(a, "--plugin="))
 		case a == "-h", a == "--help":
 			fmt.Fprintln(os.Stderr, usage())
 			os.Exit(0)
@@ -75,5 +85,7 @@ Flags:
   --yang-path=<dir>      Add a YANG search directory (repeatable)
   --adapter=<mock|sysrepo>  Select backend (default: mock)
   --sysrepo-socket=<path>   sysrepo socket (for --adapter=sysrepo)
+  --plugins-dir=<dir>    Directory with libsrplg-*.so (for --adapter=sysrepo)
+  --plugin=<name>        Allowlist a plugin (repeatable; empty = all)
 `
 }

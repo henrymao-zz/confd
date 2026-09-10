@@ -36,3 +36,20 @@ func TestFromFlags_SpaceForm(t *testing.T) {
 		t.Errorf("bind: %q", cfg.SSHBind)
 	}
 }
+
+func TestFromFlags_Plugins(t *testing.T) {
+	cfg, err := FromFlags(Default(), []string{
+		"--plugins-dir=/usr/lib/confd/plugins",
+		"--plugin=ietf-system",
+		"--plugin=ietf-interfaces",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg.PluginsDir != "/usr/lib/confd/plugins" {
+		t.Errorf("plugins-dir: %q", cfg.PluginsDir)
+	}
+	if len(cfg.Plugins) != 2 || cfg.Plugins[0] != "ietf-system" || cfg.Plugins[1] != "ietf-interfaces" {
+		t.Errorf("plugins: %v", cfg.Plugins)
+	}
+}

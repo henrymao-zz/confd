@@ -12,6 +12,7 @@ package sysrepoadapter
 import (
 	"context"
 	"errors"
+	"unsafe"
 )
 
 // Datastore enumerates the sysrepo datastores confd can address.
@@ -108,3 +109,10 @@ type Session interface {
 
 // ErrNotFound is returned when an xpath selects no nodes.
 var ErrNotFound = errors.New("sysrepo: no data at xpath")
+
+// RawConnProvider is optionally implemented by cgo-based Conn
+// implementations to expose the raw sr_conn_ctx_t* so the plugin host
+// can create per-plugin sessions on the same connection.
+type RawConnProvider interface {
+	RawConn() unsafe.Pointer
+}
