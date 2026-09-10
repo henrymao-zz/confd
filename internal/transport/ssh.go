@@ -152,13 +152,44 @@ func (t *sshTransport) acceptChannel() error {
 		if err != nil {
 			continue
 		}
-		go ssh.DiscardRequests(reqs)
+		// Handle channel-level requests (subsystem, exec, shell, env,
+		// pty-req, etc.) so the SSH client doesn't see "subsystem request
+		// failed". We accept "subsystem" (used by `ssh -s ... netconf`)
+		// and "exec" and reject everything else.
+		go t.handleChannelRequests(reqs, ch)
 		t.ch = ch
 		t.r = framing.NewReader(ch)
 		t.w = framing.NewWriter(ch)
 		return nil
 	}
 	return io.EOF
+}
+
+// handleChannelRequests processes per-channel SSH requests. The
+// "subsystem" request (sent by `ssh -s host netconf`) is accepted so
+// the client doesn't report "subsystem request failed".
+func (t *sshTransport) handleChannelRequests(reqs <-chan *ssh.Request, ch ssh.Channel) {
+	for req := range reqs {
+		switch req.Type {
+		case "subsystem":
+			// Parse the subsystem name (4-byte length + string).
+			ok := true
+			if len(req.Payload) < 4 {
+				ok = false
+			}
+			if ok {
+				// Accept any subsystem name; we're a NETCONF server.
+				_ = req.Reply(true, nil)
+				continue
+			}
+			_ = req.Reply(false, nil)
+		case "exec":
+			_ = req.Reply(true, nil)
+		default:
+			// Reject unknown requests (shell, pty-req, env, etc.).
+			_ = req.Reply(false, nil)
+		}
+	}
 }
 
 func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
