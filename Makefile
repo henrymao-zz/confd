@@ -67,7 +67,7 @@ build-deps:
 
 plugins: build-deps
 	@echo "Building sysrepo-plugins from $(PLUGINS_SRC)..."
-	cd $(PLUGINS_SRC) && rm -rf build && mkdir -p build && cd build && cmake -DSYSTEMD_IFINDEX=1 .. && make -j$$(nproc)
+	cd $(PLUGINS_SRC) && rm -rf build && mkdir -p build && cd build && cmake -DSYSTEMD_IFINDEX=1 -DBUILD_OS_METRICS_PLUGIN=OFF .. && make -j$$(nproc)
 	@echo "Copying plugin .so files to $(PLUGINS_DIR)..."
 	sudo mkdir -p $(PLUGINS_DIR)
 	sudo cp $(PLUGINS_SRC)/build/plugins/*/libsrplg-*.so $(PLUGINS_DIR)/ 2>/dev/null || true
