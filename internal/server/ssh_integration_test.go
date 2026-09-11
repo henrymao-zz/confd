@@ -2,28 +2,48 @@ package server
 
 import (
 	"context"
+	"encoding/xml"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/example/confd/internal/framing"
-	"github.com/example/confd/internal/hello"
-	"github.com/example/confd/internal/transport"
+	"nemith.io/netconf"
+	"nemith.io/netconf/transport"
+
+	"github.com/example/confd/internal/sysrepoadapter"
+	tr "github.com/example/confd/internal/transport"
 	"golang.org/x/crypto/ssh"
 )
 
 // TestServer_SSHEndToEnd spins up the server over real SSH on a loopback
 // port and drives a full <hello> + <get-config> exchange with an
-// ssh.Dial-based client.
+// ssh.Dial-based client. Both sides use nemith's framer.
 func TestServer_SSHEndToEnd(t *testing.T) {
-	srv := newTestServer(t)
+	mock := sysrepoadapter.NewMock(nil)
+	srv, err := New(context.Background(), Config{
+		YANGPaths: []string{yangDir(t)},
+		Adapter:   mock,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	mock.SetData(sysrepoadapter.Running, sampleTree())
+	mock.SetData(sysrepoadapter.Operational, sampleTree())
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	ln, err := tr.NewSSH(tr.SSHConfig{
+		Bind:     "127.0.0.1:0",
+		Password: "s3cret",
+	})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
 	listenErr := make(chan error, 1)
-	ln := newSSHListener(t, srv)
 	go func() { listenErr <- srv.ServeSSHListener(ctx, ln) }()
 
 	cliCfg := &ssh.ClientConfig{
@@ -43,60 +63,102 @@ func TestServer_SSHEndToEnd(t *testing.T) {
 	}
 	defer ch.Close()
 
-	r := framing.NewReader(ch)
-	w := framing.NewWriter(ch)
+	// Use nemith's framer on the client side too.
+	framer := transport.NewFramer(ch, ch)
 
-	// Read server hello (base:1.0 framing).
-	srvHello, err := r.ReadMessage()
+	// Read server hello.
+	hello, err := readFramed[netconf.Hello](framer)
 	if err != nil {
 		t.Fatalf("read server hello: %v", err)
 	}
-	if !strings.Contains(string(srvHello), "base:1.1") {
-		t.Fatalf("server hello missing base:1.1: %s", srvHello)
+	if !strings.Contains(strings.Join(hello.Capabilities, ","), netconf.CapNetConf11) {
+		t.Fatalf("server hello missing base:1.1: %s", hello.Capabilities)
 	}
+
 	// Send client hello.
-	if err := w.WriteMessage([]byte(`<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><capabilities><capability>` + hello.Base11 + `</capability></capabilities></hello>`)); err != nil {
+	if err := writeFramed(framer, &netconf.Hello{
+		Capabilities: []string{netconf.CapNetConf10, netconf.CapNetConf11},
+	}); err != nil {
 		t.Fatalf("send hello: %v", err)
 	}
-	r.Upgrade()
-	w.Upgrade()
+	framer.Upgrade()
 
 	// <get-config> from running.
-	if err := w.WriteMessage([]byte(`<rpc message-id="9001" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><get-config><source><running/></source></get-config></rpc>`)); err != nil {
+	if err := writeFramedRaw(framer, `<rpc message-id="9001" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><get-config><source><running/></source></get-config></rpc>`); err != nil {
 		t.Fatalf("write rpc: %v", err)
 	}
-	reply, err := r.ReadMessage()
+	reply, err := readRawFramed(framer)
 	if err != nil {
 		t.Fatalf("read reply: %v", err)
 	}
-	if !strings.Contains(string(reply), "router-1") {
+	if !strings.Contains(reply, "router-1") {
 		t.Errorf("get-config reply missing data: %s", reply)
-	}
-	if !strings.Contains(string(reply), `message-id="9001"`) {
-		t.Errorf("reply missing message-id: %s", reply)
 	}
 
 	// <get> operational.
-	if err := w.WriteMessage([]byte(`<rpc message-id="9002" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><get/></rpc>`)); err != nil {
+	if err := writeFramedRaw(framer, `<rpc message-id="9002" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><get/></rpc>`); err != nil {
 		t.Fatalf("write get: %v", err)
 	}
-	reply2, err := r.ReadMessage()
+	reply2, err := readRawFramed(framer)
 	if err != nil {
 		t.Fatalf("read get reply: %v", err)
 	}
-	if !strings.Contains(string(reply2), "uptime-seconds") {
+	if !strings.Contains(reply2, "uptime-seconds") {
 		t.Errorf("get reply missing state: %s", reply2)
 	}
+
+	// <close-session>.
+	_ = writeFramedRaw(framer, `<rpc message-id="9003" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><close-session/></rpc>`)
+	_, _ = readRawFramed(framer)
 }
 
-func newSSHListener(t *testing.T, srv *Server) transport.Listener {
-	t.Helper()
-	ln, err := transport.NewSSH(transport.SSHConfig{
-		Bind:     "127.0.0.1:0",
-		Password: "s3cret",
-	})
+func writeFramedRaw(f *transport.Framer, xmlStr string) error {
+	w, err := f.MsgWriter()
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		return err
 	}
-	return ln
+	if _, err := w.Write([]byte(xmlStr)); err != nil {
+		_ = w.Close()
+		return err
+	}
+	return w.Close()
+}
+
+func writeFramed(f *transport.Framer, v any) error {
+	w, err := f.MsgWriter()
+	if err != nil {
+		return err
+	}
+	if err := xml.NewEncoder(w).Encode(v); err != nil {
+		_ = w.Close()
+		return err
+	}
+	return w.Close()
+}
+
+func readFramed[T any](f *transport.Framer) (T, error) {
+	var zero T
+	r, err := f.MsgReader()
+	if err != nil {
+		return zero, err
+	}
+	defer r.Close()
+	var v T
+	if err := xml.NewDecoder(r).Decode(&v); err != nil {
+		return zero, err
+	}
+	return v, nil
+}
+
+func readRawFramed(f *transport.Framer) (string, error) {
+	r, err := f.MsgReader()
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }

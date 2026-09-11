@@ -65,6 +65,7 @@ func (t *PipeTransport) MsgReader() (io.ReadCloser, error) { return t.framer.Msg
 func (t *PipeTransport) MsgWriter() (io.WriteCloser, error) { return t.framer.MsgWriter() }
 func (t *PipeTransport) Upgrade()                           { t.framer.Upgrade() }
 func (t *PipeTransport) Close() error                        { return t.conn.Close() }
+func (t *PipeTransport) RawConn() (io.Reader, io.Writer)     { return t.conn, t.conn }
 
 // NewPipe returns a pair of connected PipeTransports (client, server)
 // for testing, backed by net.Pipe (synchronous but buffered).

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 
+	"nemith.io/netconf/transport"
+
 	"github.com/example/confd/internal/framing"
 )
 
@@ -23,6 +25,9 @@ type Transport interface {
 	PeerUser() string
 	// Close tears down the transport.
 	Close() error
+	// RawChannel returns the underlying io.Reader + io.Writer (the SSH
+	// channel) for wrapping with nemith's transport.Framer.
+	RawChannel() (io.Reader, io.Writer)
 }
 
 // Pipe builds a pair of in-memory transports backed by a duplex pipe. Used
@@ -31,16 +36,17 @@ type Transport interface {
 func Pipe() (client Transport, server Transport) {
 	ar, bw := io.Pipe()
 	br, aw := io.Pipe()
-	client = &pipeTransport{r: framing.NewReader(ar), w: framing.NewWriter(aw), rawC: aw, rawR: ar}
-	server = &pipeTransport{r: framing.NewReader(br), w: framing.NewWriter(bw), rawC: bw, rawR: br}
+	client = &pipeTransport{r: framing.NewReader(ar), w: framing.NewWriter(aw), rawR: ar, rawW: aw, rawC: aw}
+	server = &pipeTransport{r: framing.NewReader(br), w: framing.NewWriter(bw), rawR: br, rawW: bw, rawC: bw}
 	return client, server
 }
 
 type pipeTransport struct {
 	r    *framing.Reader
 	w    *framing.Writer
+	rawR io.Reader
+	rawW io.Writer
 	rawC io.Closer
-	rawR io.Closer
 }
 
 func (t *pipeTransport) ReadMessage() ([]byte, error) {
@@ -57,8 +63,11 @@ func (t *pipeTransport) PeerUser() string { return "test" }
 
 func (t *pipeTransport) Close() error {
 	_ = t.rawC.Close()
-	_ = t.rawR.Close()
 	return nil
+}
+
+func (t *pipeTransport) RawChannel() (io.Reader, io.Writer) {
+	return t.rawR, t.rawW
 }
 
 // Listener is a NETCONF transport listener.
@@ -67,3 +76,25 @@ type Listener interface {
 	Close() error
 	Addr() net.Addr
 }
+
+// NemithTransport wraps a Transport's raw SSH channel with nemith's
+// transport.Framer. It implements the interface that nettrans.ServerLoop
+// expects (MsgReader/MsgWriter/Upgrade/Close).
+type NemithTransport struct {
+	framer *transport.Framer
+	close  func() error
+}
+
+// NewNemithTransport wraps a Transport with nemith's framer.
+func NewNemithTransport(t Transport) *NemithTransport {
+	r, w := t.RawChannel()
+	return &NemithTransport{
+		framer: transport.NewFramer(r, w),
+		close:  t.Close,
+	}
+}
+
+func (t *NemithTransport) MsgReader() (io.ReadCloser, error) { return t.framer.MsgReader() }
+func (t *NemithTransport) MsgWriter() (io.WriteCloser, error) { return t.framer.MsgWriter() }
+func (t *NemithTransport) Upgrade()                           { t.framer.Upgrade() }
+func (t *NemithTransport) Close() error                        { return t.close() }

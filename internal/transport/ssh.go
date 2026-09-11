@@ -119,6 +119,11 @@ func (t *sshTransport) Framing() (*framing.Reader, *framing.Writer) {
 	return t.r, t.w
 }
 
+func (t *sshTransport) RawChannel() (io.Reader, io.Writer) {
+	_ = t.ensure()
+	return t.ch, t.ch
+}
+
 func (t *sshTransport) PeerUser() string { return t.user }
 
 func (t *sshTransport) Close() error {

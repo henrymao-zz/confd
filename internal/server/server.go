@@ -1,24 +1,24 @@
-// Package server wires together the transport, framing, hello negotiation,
-// rpc dispatcher, schema cache, and sysrepo adapter into a runnable
-// NETCONF server. It exposes Server for the cmd/confd entrypoint and for
-// end-to-end tests.
+// Package server wires together the transport, NETCONF protocol loop,
+// schema cache, sysrepo adapter, and plugin host into a runnable server.
+// It uses nemith.io/netconf for framing, hello, and message types via
+// the internal/nettrans adapter.
 package server
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"sync"
 
 	"github.com/example/confd/internal/data"
-	"github.com/example/confd/internal/hello"
+	"github.com/example/confd/internal/nettrans"
 	"github.com/example/confd/internal/operations"
 	"github.com/example/confd/internal/pluginhost"
-	"github.com/example/confd/internal/rpc"
 	"github.com/example/confd/internal/schema"
 	"github.com/example/confd/internal/sysrepoadapter"
 	"github.com/example/confd/internal/transport"
+
+	"nemith.io/netconf"
 )
 
 // Config configures a Server.
@@ -27,7 +27,7 @@ type Config struct {
 	// cache.
 	YANGPaths []string
 	// Adapter is the sysrepo (or mock) backend. If nil, a Mock adapter
-	// seeded from the schema cache is used.
+	// is used.
 	Adapter sysrepoadapter.Adapter
 	// Modules is the list of module infos to advertise when using the mock
 	// adapter. Ignored when Adapter is non-nil.
@@ -46,7 +46,6 @@ type Server struct {
 	adapter    sysrepoadapter.Adapter
 	conn       sysrepoadapter.Conn
 	encoder    *data.Encoder
-	dispatch   *rpc.Dispatcher
 	reg        *operations.SessionRegistry
 	pluginHost pluginhost.Host
 }
@@ -80,21 +79,12 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 
 	reg := operations.NewSessionRegistry()
 	encoder := data.New(cache)
-	dispatch := rpc.NewDispatcher()
-	deps := operations.Deps{
-		Cache:    cache,
-		Conn:     conn,
-		Encoder:  encoder,
-		Sessions: reg,
-	}
-	operations.Register(dispatch, deps)
 	return &Server{
 		cfg:        cfg,
 		cache:      cache,
 		adapter:    adapter,
 		conn:       conn,
 		encoder:    encoder,
-		dispatch:   dispatch,
 		reg:        reg,
 		pluginHost: ph,
 	}, nil
@@ -115,74 +105,48 @@ func (s *Server) Close() error {
 	return nil
 }
 
+// buildCapabilities returns the capability URIs for the <hello> message.
+func (s *Server) buildCapabilities() []string {
+	caps := []string{netconf.CapNetConf10, netconf.CapNetConf11}
+	for _, m := range s.cache.Modules() {
+		uri := m.Namespace
+		if m.Revision != "" {
+			uri += "?revision=" + m.Revision
+		}
+		caps = append(caps, uri)
+	}
+	return caps
+}
+
+// buildHandlers returns the operation handler map for nettrans.ServerLoop.
+func (s *Server) buildHandlers(sessionID uint64, peerUser string) map[string]nettrans.Handler {
+	deps := operations.Deps{
+		Cache:    s.cache,
+		Conn:     s.conn,
+		Encoder:  s.encoder,
+		Sessions: s.reg,
+	}
+	return operations.BuildHandlers(deps, sessionID, peerUser)
+}
+
 // ServeTransport runs the NETCONF protocol over a single Transport (one
 // session). It blocks until the session ends or the transport closes.
 func (s *Server) ServeTransport(ctx context.Context, t transport.Transport) error {
 	defer t.Close()
 	sessionID := s.reg.Alloc()
 	state := &operations.SessionState{
-		ID:      sessionID,
-		User:    t.PeerUser(),
+		ID:   sessionID,
+		User: t.PeerUser(),
 	}
 	s.reg.Register(state)
 	defer s.reg.Forget(sessionID)
 
-	r, w := t.Framing()
-
-	// --- <hello> phase ---------------------------------------------------
+	// Wrap the transport's SSH channel with nemith's framer.
+	tr := transport.NewNemithTransport(t)
+	handlers := s.buildHandlers(sessionID, state.User)
 	caps := s.buildCapabilities()
-	helloMsg := hello.Build(sessionID, caps)
-	if err := w.WriteMessage(helloMsg); err != nil {
-		return fmt.Errorf("server: send hello: %w", err)
-	}
-	peerPayload, err := r.ReadMessage()
-	if err != nil {
-		return fmt.Errorf("server: read peer hello: %w", err)
-	}
-	peerHello, err := hello.Parse(peerPayload)
-	if err != nil {
-		return fmt.Errorf("server: parse peer hello: %w", err)
-	}
-	hello.Negotiate(peerHello, r, w)
 
-	// --- <rpc> phase ----------------------------------------------------
-	rctx := rpc.Context{
-		SessionID:  sessionID,
-		PeerUser:   state.User,
-		Dispatcher: s.dispatch,
-	}
-	for {
-		payload, err := r.ReadMessage()
-		if err != nil {
-			return nil // peer closed / EOF -> session ends cleanly
-		}
-		out := s.dispatch.Handle(rctx, payload)
-		if err := w.WriteMessage(out); err != nil {
-			return fmt.Errorf("server: write reply: %w", err)
-		}
-		// Detect <close-session> by scanning the payload for the op. We
-		// rely on the handler returning the close-session sentinel; but
-		// since dispatch returns the encoded reply rather than the error,
-		// we detect close-session by name here.
-		if isCloseSession(payload) {
-			return nil
-		}
-	}
-}
-
-func (s *Server) buildCapabilities() []hello.Capability {
-	caps := []hello.Capability{{URI: hello.Base11}, {URI: hello.Base10}}
-	for _, m := range s.cache.Modules() {
-		caps = append(caps, hello.Capability{
-			URI:      m.Namespace,
-			Revision: m.Revision,
-		})
-	}
-	return caps
-}
-
-func isCloseSession(payload []byte) bool {
-	return bytes.Contains(payload, []byte("<close-session"))
+	return nettrans.ServerLoop(tr, handlers, caps, sessionID, state.User)
 }
 
 // ListenAndServe starts an SSH listener and serves sessions until ctx is

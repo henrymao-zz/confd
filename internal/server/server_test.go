@@ -3,15 +3,17 @@ package server
 import (
 	"context"
 	"encoding/xml"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"nemith.io/netconf"
+
 	"github.com/example/confd/internal/framing"
-	"github.com/example/confd/internal/hello"
+	"github.com/example/confd/internal/nettrans"
 	"github.com/example/confd/internal/sysrepoadapter"
-	"github.com/example/confd/internal/transport"
 )
 
 func yangDir(t *testing.T) string {
@@ -59,78 +61,188 @@ func newTestServer(t *testing.T) *Server {
 	return srv
 }
 
-// clientHandshake reads the server <hello>, replies with a base:1.1
-// <hello>, and upgrades the client framing to base:1.1.
-func clientHandshake(t *testing.T, r *framing.Reader, w *framing.Writer) {
-	t.Helper()
-	helloBytes, err := r.ReadMessage()
+// --- test helpers using nemith framer ---
+
+func writeMsg(tr interface{ MsgWriter() (io.WriteCloser, error) }, v any) error {
+	w, err := tr.MsgWriter()
 	if err != nil {
-		t.Fatalf("read hello: %v", err)
+		return err
 	}
-	if !strings.Contains(string(helloBytes), "base:1.1") {
-		t.Errorf("server hello missing base:1.1: %s", helloBytes)
+	if err := xml.NewEncoder(w).Encode(v); err != nil {
+		_ = w.Close()
+		return err
 	}
-	if err := w.WriteMessage([]byte(`<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><capabilities><capability>` + hello.Base11 + `</capability></capabilities></hello>`)); err != nil {
-		t.Fatalf("send hello: %v", err)
+	return w.Close()
+}
+
+func readMsg[T any](tr interface{ MsgReader() (io.ReadCloser, error) }) (T, error) {
+	var zero T
+	r, err := tr.MsgReader()
+	if err != nil {
+		return zero, err
 	}
-	r.Upgrade()
-	w.Upgrade()
+	defer r.Close()
+	var v T
+	if err := xml.NewDecoder(r).Decode(&v); err != nil {
+		return zero, err
+	}
+	return v, nil
+}
+
+func readRaw(tr interface{ MsgReader() (io.ReadCloser, error) }) (string, error) {
+	r, err := tr.MsgReader()
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// clientHandshake reads the server <hello>, sends a client <hello>
+// advertising base:1.1, and upgrades to chunked framing.
+func clientHandshake(t *testing.T, tr *nettrans.PipeTransport) {
+	t.Helper()
+	hello, err := readMsg[netconf.Hello](tr)
+	if err != nil {
+		t.Fatalf("read server hello: %v", err)
+	}
+	if !strings.Contains(strings.Join(hello.Capabilities, ","), netconf.CapNetConf11) {
+		t.Errorf("server hello missing base:1.1: %s", hello.Capabilities)
+	}
+	if err := writeMsg(tr, &netconf.Hello{
+		Capabilities: []string{netconf.CapNetConf10, netconf.CapNetConf11},
+	}); err != nil {
+		t.Fatalf("send client hello: %v", err)
+	}
+	tr.Upgrade()
+}
+
+type rpcStruct struct {
+	XMLName   xml.Name `xml:"urn:ietf:params:xml:ns:netconf:base:1.0 rpc"`
+	MessageID string   `xml:"message-id,attr"`
+	Inner     string   `xml:",innerxml"`
+}
+
+func sendRPC(tr *nettrans.PipeTransport, msgID, op string) error {
+	return writeMsg(tr, &rpcStruct{MessageID: msgID, Inner: "<" + op + "/>"})
+}
+
+func sendRPCBody(tr *nettrans.PipeTransport, msgID, body string) error {
+	return writeMsg(tr, &rpcStruct{MessageID: msgID, Inner: body})
+}
+
+// startServerPipe creates a test server, a nettrans pipe, and starts
+// ServeTransport on the server side. Returns the client pipe transport.
+func startServerPipe(t *testing.T) (*Server, *nettrans.PipeTransport, chan error) {
+	t.Helper()
+	srv := newTestServer(t)
+	client, server := nettrans.NewPipe()
+	done := make(chan error, 1)
+	// We need a transport.Transport adapter for ServeTransport.
+	// Use a pipeTransportAdapter that implements transport.Transport.
+	adapter := &pipeAdapter{tr: server}
+	go func() { done <- srv.ServeTransport(context.Background(), adapter) }()
+	return srv, client, done
+}
+
+// pipeAdapter wraps a nettrans.PipeTransport to satisfy the
+// transport.Transport interface (needed by ServeTransport).
+type pipeAdapter struct {
+	tr *nettrans.PipeTransport
+}
+
+func (p *pipeAdapter) ReadMessage() ([]byte, error) {
+	r, err := p.tr.MsgReader()
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+func (p *pipeAdapter) WriteMessage(msg []byte) error {
+	w, err := p.tr.MsgWriter()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		_ = w.Close()
+		return err
+	}
+	return w.Close()
+}
+
+func (p *pipeAdapter) Framing() (*framing.Reader, *framing.Writer) {
+	return nil, nil
+}
+
+func (p *pipeAdapter) PeerUser() string { return "test" }
+
+func (p *pipeAdapter) Close() error { return p.tr.Close() }
+
+func (p *pipeAdapter) RawChannel() (io.Reader, io.Writer) {
+	// Use the underlying net.Pipe connections.
+	// The PipeTransport wraps a net.Pipe with nemith's Framer.
+	// We need to return the raw net.Conn.
+	// But PipeTransport hides the net.Conn. We'll add a method.
+	return p.tr.RawConn()
 }
 
 func TestServer_GetConfig(t *testing.T) {
-	srv := newTestServer(t)
-	client, server := transport.Pipe()
-	go srv.ServeTransport(context.Background(), server)
+	srv, client, _ := startServerPipe(t)
+	defer srv.Close()
 
-	r, w := client.Framing()
-	clientHandshake(t, r, w)
+	clientHandshake(t, client)
 
-	rpc1 := []byte(`<rpc message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><get-config><source><running/></source></get-config></rpc>`)
-	if err := w.WriteMessage(rpc1); err != nil {
+	if err := sendRPCBody(client, "101", "<get-config><source><running/></source></get-config>"); err != nil {
 		t.Fatalf("write rpc: %v", err)
 	}
-	reply, err := r.ReadMessage()
+	reply, err := readRaw(client)
 	if err != nil {
 		t.Fatalf("read reply: %v", err)
 	}
-	if !strings.Contains(string(reply), "router-1") {
+	if !strings.Contains(reply, "router-1") {
 		t.Errorf("get-config reply missing data: %s", reply)
 	}
-	if !strings.Contains(string(reply), `message-id="101"`) {
+	if !strings.Contains(reply, `message-id="101"`) {
 		t.Errorf("reply missing message-id: %s", reply)
 	}
+	_ = sendRPC(client, "999", "close-session")
+	_, _ = readRaw(client)
 }
 
 func TestServer_Get_Operational(t *testing.T) {
-	srv := newTestServer(t)
-	client, server := transport.Pipe()
-	go srv.ServeTransport(context.Background(), server)
-	r, w := client.Framing()
-	clientHandshake(t, r, w)
+	srv, client, _ := startServerPipe(t)
+	defer srv.Close()
+	clientHandshake(t, client)
 
-	if err := w.WriteMessage([]byte(`<rpc message-id="202" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><get/></rpc>`)); err != nil {
+	if err := sendRPC(client, "202", "get"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	reply, err := r.ReadMessage()
+	reply, err := readRaw(client)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if !strings.Contains(string(reply), "uptime-seconds") {
+	if !strings.Contains(reply, "uptime-seconds") {
 		t.Errorf("get reply missing state: %s", reply)
 	}
+	_ = sendRPC(client, "999", "close-session")
+	_, _ = readRaw(client)
 }
 
 func TestServer_GetSchema(t *testing.T) {
-	srv := newTestServer(t)
-	client, server := transport.Pipe()
-	go srv.ServeTransport(context.Background(), server)
-	r, w := client.Framing()
-	clientHandshake(t, r, w)
+	srv, client, _ := startServerPipe(t)
+	defer srv.Close()
+	clientHandshake(t, client)
 
-	if err := w.WriteMessage([]byte(`<rpc message-id="303" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><get-schema><identifier>confd-test</identifier></get-schema></rpc>`)); err != nil {
+	if err := sendRPCBody(client, "303", "<get-schema><identifier>confd-test</identifier></get-schema>"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	reply, err := r.ReadMessage()
+	reply, err := readRaw(client)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -144,72 +256,71 @@ func TestServer_GetSchema(t *testing.T) {
 	if !strings.Contains(rp.Data, "module confd-test") {
 		t.Errorf("get-schema returned wrong content: %q", rp.Data)
 	}
+	_ = sendRPC(client, "999", "close-session")
+	_, _ = readRaw(client)
 }
 
 func TestServer_UnknownOp(t *testing.T) {
-	srv := newTestServer(t)
-	client, server := transport.Pipe()
-	go srv.ServeTransport(context.Background(), server)
-	r, w := client.Framing()
-	clientHandshake(t, r, w)
+	srv, client, _ := startServerPipe(t)
+	defer srv.Close()
+	clientHandshake(t, client)
 
-	if err := w.WriteMessage([]byte(`<rpc message-id="404" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><edit-config/></rpc>`)); err != nil {
+	if err := sendRPC(client, "404", "edit-config"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	reply, err := r.ReadMessage()
+	reply, err := readRaw(client)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if !strings.Contains(string(reply), "operation-not-supported") {
+	if !strings.Contains(reply, "operation-not-supported") {
 		t.Errorf("expected operation-not-supported: %s", reply)
 	}
+	_ = sendRPC(client, "999", "close-session")
+	_, _ = readRaw(client)
 }
 
 func TestServer_LockAndUnlock(t *testing.T) {
-	srv := newTestServer(t)
-	client, server := transport.Pipe()
-	go srv.ServeTransport(context.Background(), server)
-	r, w := client.Framing()
-	clientHandshake(t, r, w)
+	srv, client, _ := startServerPipe(t)
+	defer srv.Close()
+	clientHandshake(t, client)
 
-	if err := w.WriteMessage([]byte(`<rpc message-id="1" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><lock><target><running/></target></lock></rpc>`)); err != nil {
+	if err := sendRPCBody(client, "1", "<lock><target><running/></target></lock>"); err != nil {
 		t.Fatalf("write lock: %v", err)
 	}
-	reply, err := r.ReadMessage()
+	reply, err := readRaw(client)
 	if err != nil {
 		t.Fatalf("read lock: %v", err)
 	}
-	if !strings.Contains(string(reply), "<ok/>") {
+	if !strings.Contains(reply, "<ok/>") {
 		t.Errorf("lock reply: %s", reply)
 	}
-	if err := w.WriteMessage([]byte(`<rpc message-id="2" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><unlock><target><running/></target></unlock></rpc>`)); err != nil {
+	if err := sendRPCBody(client, "2", "<unlock><target><running/></target></unlock>"); err != nil {
 		t.Fatalf("write unlock: %v", err)
 	}
-	reply2, err := r.ReadMessage()
+	reply2, err := readRaw(client)
 	if err != nil {
 		t.Fatalf("read unlock: %v", err)
 	}
-	if !strings.Contains(string(reply2), "<ok/>") {
+	if !strings.Contains(reply2, "<ok/>") {
 		t.Errorf("unlock reply: %s", reply2)
 	}
+	_ = sendRPC(client, "999", "close-session")
+	_, _ = readRaw(client)
 }
 
 func TestServer_CloseSession(t *testing.T) {
-	srv := newTestServer(t)
-	client, server := transport.Pipe()
-	done := make(chan error, 1)
-	go func() { done <- srv.ServeTransport(context.Background(), server) }()
-	r, w := client.Framing()
-	clientHandshake(t, r, w)
+	srv, client, done := startServerPipe(t)
+	defer srv.Close()
+	clientHandshake(t, client)
 
-	if err := w.WriteMessage([]byte(`<rpc message-id="9" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><close-session/></rpc>`)); err != nil {
+	if err := sendRPC(client, "9", "close-session"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	reply, err := r.ReadMessage()
+	reply, err := readRaw(client)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if !strings.Contains(string(reply), "<ok/>") {
+	if !strings.Contains(reply, "<ok/>") {
 		t.Errorf("close-session reply: %s", reply)
 	}
 	select {

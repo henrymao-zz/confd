@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/example/confd/internal/data"
+	"github.com/example/confd/internal/nettrans"
 	"github.com/example/confd/internal/rpc"
 	"github.com/example/confd/internal/schema"
 	"github.com/example/confd/internal/sysrepoadapter"
@@ -82,6 +83,54 @@ func Register(d *rpc.Dispatcher, deps Deps) {
 	d.Register("unlock", &unlockHandler{deps: deps})
 	d.Register("close-session", &closeSessionHandler{deps: deps})
 	d.Register("kill-session", &killSessionHandler{deps: deps})
+}
+
+// BuildHandlers returns the operation handler map for nettrans.ServerLoop.
+// Each handler takes (msgID, innerXML) and returns (replyBody, error).
+// The replyBody is raw XML bytes to embed in <rpc-reply>; the error is
+// converted to an <rpc-error> by nettrans.ServerLoop.
+func BuildHandlers(deps Deps, sessionID uint64, peerUser string) map[string]nettrans.Handler {
+	d := rpc.NewDispatcher()
+	Register(d, deps)
+	rctx := rpc.Context{SessionID: sessionID, PeerUser: peerUser, Dispatcher: d}
+
+	handlers := make(map[string]nettrans.Handler)
+
+	wrap := func(opName string) nettrans.Handler {
+		return func(msgID string, innerXML []byte) (any, error) {
+			rpcXML := fmt.Sprintf(`<rpc message-id="%s" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">%s</rpc>`,
+				msgID, string(innerXML))
+			out := d.Handle(rctx, []byte(rpcXML))
+			return extractRPCReplyInner(out), nil
+		}
+	}
+
+	for _, op := range []string{"get", "get-config", "get-schema", "lock", "unlock", "close-session", "kill-session"} {
+		handlers[op] = wrap(op)
+	}
+	return handlers
+}
+
+// extractRPCReplyInner extracts the inner XML from a <rpc-reply> envelope.
+func extractRPCReplyInner(reply []byte) []byte {
+	s := string(reply)
+	startTag := "<rpc-reply"
+	endTag := "</rpc-reply>"
+	startIdx := strings.Index(s, startTag)
+	if startIdx < 0 {
+		return []byte("<ok/>")
+	}
+	// Find the end of the opening <rpc-reply ...> tag.
+	gtIdx := strings.Index(s[startIdx:], ">")
+	if gtIdx < 0 {
+		return []byte("<ok/>")
+	}
+	innerStart := startIdx + gtIdx + 1
+	endIdx := strings.LastIndex(s, endTag)
+	if endIdx < 0 || endIdx <= innerStart {
+		return []byte("<ok/>")
+	}
+	return []byte(s[innerStart:endIdx])
 }
 
 // --- shared helpers ---------------------------------------------------------
