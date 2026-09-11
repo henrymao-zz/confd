@@ -45,12 +45,11 @@ build-deps:
 	rm -rf /tmp/confd-build/sysrepo
 	mkdir -p /tmp/confd-build/sysrepo
 	cd /tmp/confd-build/sysrepo && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNOTIFD_SETUP=OFF -DENABLE_SYSREPO_NOTIFD=OFF $(CURDIR)/deps/sysrepo && make -j$$(nproc) && sudo make install
-	@echo "Building libyang-cpp from submodule (patched for libyang 5.x)..."
+	@echo "Building libyang-cpp from submodule (pinned for libyang 5.x)..."
 	rm -rf /tmp/confd-build/libyang-cpp /tmp/confd-build/libyang-cpp-src
 	mkdir -p /tmp/confd-build/libyang-cpp
-	# Copy source to /tmp and patch there (mount doesn't allow in-place sed)
+	# Copy source to /tmp (mount doesn't allow in-place sed or builds)
 	rsync -a --exclude='sed*' --exclude='build' $(CURDIR)/deps/libyang-cpp/ /tmp/confd-build/libyang-cpp-src/
-	sed -i 's/libyang>=6.1.1/libyang>=5.0.0/' /tmp/confd-build/libyang-cpp-src/CMakeLists.txt
 	cd /tmp/confd-build/libyang-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local /tmp/confd-build/libyang-cpp-src && make -j$$(nproc) && sudo make install
 	@echo "Building sysrepo-cpp from submodule..."
 	rm -rf /tmp/confd-build/sysrepo-cpp
