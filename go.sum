@@ -1,3 +1,5 @@
+github.com/carlmjohnson/be v0.25.2 h1:EPTT7qCF5xJjcgrV5yX/muP5HTqSJR2VOjO6O4l9cYE=
+github.com/carlmjohnson/be v0.25.2/go.mod h1:2P+bH/INocW7e411OYCCIwT3nnJneZyveVav0WBBM1U=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
@@ -12,3 +14,5 @@ golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
 golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 golang.org/x/term v0.46.0 h1:3+OXuTbaKDgwk8jTi3aSLHRlmWqHEUDUtxnbFigO4YE=
 golang.org/x/term v0.46.0/go.mod h1:+K02xbkittuwc0Am4abfA3Fc+XRGXkvBXNO88NCXPoc=
+nemith.io/netconf v0.0.4 h1:v1i05GAypUTYRrA1gwt6bZCWhDeDkB7sL7BO8JwkMWY=
+nemith.io/netconf v0.0.4/go.mod h1:VisEiVJJ+W4NgTZ4QPKJb70RttJN2Ky6vvxzs8X5Dpg=
