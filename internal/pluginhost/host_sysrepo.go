@@ -7,22 +7,23 @@
 package pluginhost
 
 /*
-#cgo pkg-config: libsysrepo
+#cgo pkg-config: sysrepo
 #include <sysrepo.h>
 #include <dlfcn.h>
 #include <stdlib.h>
 
 // Load one plugin: dlopen, create a session, call init.
 // Returns 0 on success, negative on error.
-// On success, *sess_out and *priv_out are set; *handle_out is the dlopen handle.
-static int cf_plugin_load(const char *path, sr_conn_ctx_t *conn,
+// On success, *handle_out, *sess_out, *priv_out are set.
+// We use void** for all out-params to avoid cgo type friction.
+static int cf_plugin_load(const char *path, void *conn,
                           void **handle_out,
-                          sr_session_ctx_t **sess_out, void **priv_out) {
+                          void **sess_out, void **priv_out) {
     void *h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
     if (!h) return -1;
 
     sr_session_ctx_t *sess = NULL;
-    int rc = sr_session_start(conn, SR_DS_RUNNING, &sess);
+    int rc = sr_session_start((sr_conn_ctx_t *)conn, SR_DS_RUNNING, &sess);
     if (rc != SR_ERR_OK) { dlclose(h); return rc; }
 
     int (*init_cb)(sr_session_ctx_t *, void **) =
@@ -40,11 +41,11 @@ static int cf_plugin_load(const char *path, sr_conn_ctx_t *conn,
 }
 
 // Unload one plugin: call cleanup, stop session, dlclose.
-static void cf_plugin_unload(void *handle, sr_session_ctx_t *sess, void *priv) {
+static void cf_plugin_unload(void *handle, void *sess, void *priv) {
     void (*cleanup_cb)(sr_session_ctx_t *, void *) =
         (void (*)(sr_session_ctx_t *, void *))dlsym(handle, "sr_plugin_cleanup_cb");
-    if (cleanup_cb) cleanup_cb(sess, priv);
-    sr_session_stop(sess);
+    if (cleanup_cb) cleanup_cb((sr_session_ctx_t *)sess, priv);
+    sr_session_stop((sr_session_ctx_t *)sess);
     dlclose(handle);
 }
 */
@@ -89,16 +90,13 @@ func (h *CGoHost) Start(conn sysrepoadapter.Conn, specs []Spec) error {
 	if rawConn == nil {
 		return fmt.Errorf("pluginhost: nil raw connection")
 	}
-	cConn := (*C.sr_conn_ctx_t)(rawConn)
 	h.conn = conn
 
 	for _, s := range specs {
 		cPath := C.CString(s.Path)
 		var handle, sess, priv unsafe.Pointer
-		rc := int(C.cf_plugin_load(cPath, cConn,
-			(*unsafe.Pointer)(&handle),
-			(*unsafe.Pointer)(&sess),
-			(*unsafe.Pointer)(&priv)))
+		rc := int(C.cf_plugin_load(cPath, rawConn,
+			&handle, &sess, &priv))
 		C.free(unsafe.Pointer(cPath))
 		if rc != 0 {
 			// init failure → disable, log, skip (improves on sysrepo-plugind)
@@ -121,7 +119,7 @@ func (h *CGoHost) Stop() error {
 	defer h.mu.Unlock()
 	for i := len(h.loaded) - 1; i >= 0; i-- {
 		p := h.loaded[i]
-		C.cf_plugin_unload(p.handle, (*C.sr_session_ctx_t)(p.session), p.priv)
+		C.cf_plugin_unload(p.handle, p.session, p.priv)
 	}
 	h.loaded = nil
 	return nil

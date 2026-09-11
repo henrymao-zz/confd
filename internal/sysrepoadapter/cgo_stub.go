@@ -6,7 +6,7 @@
 package sysrepoadapter
 
 /*
-#cgo pkg-config: libsysrepo
+#cgo pkg-config: sysrepo
 #include <sysrepo.h>
 #include <stdlib.h>
 */
@@ -32,7 +32,7 @@ func (a *CGo) Connect(ctx context.Context) (Conn, error) {
 	var conn *C.sr_conn_ctx_t
 	rc := C.sr_connect(0, &conn)
 	if rc != C.SR_ERR_OK {
-		return nil, fmt.Errorf("sysrepoadapter: sr_connect: %s", C.GoString(C.sr_strerror(int(rc))))
+		return nil, fmt.Errorf("sysrepoadapter: sr_connect: %s", C.GoString(C.sr_strerror(rc)))
 	}
 	return &cgoConn{raw: unsafe.Pointer(conn)}, nil
 }
@@ -63,7 +63,7 @@ func (c *cgoConn) OpenSession(ctx context.Context, user string) (Session, error)
 	var sess *C.sr_session_ctx_t
 	rc := C.sr_session_start((*C.sr_conn_ctx_t)(c.raw), C.SR_DS_RUNNING, &sess)
 	if rc != C.SR_ERR_OK {
-		return nil, fmt.Errorf("sysrepoadapter: sr_session_start: %s", C.GoString(C.sr_strerror(int(rc))))
+		return nil, fmt.Errorf("sysrepoadapter: sr_session_start: %s", C.GoString(C.sr_strerror(rc)))
 	}
 	return &cgoSession{raw: unsafe.Pointer(sess), ds: Running}, nil
 }
@@ -101,7 +101,7 @@ func (s *cgoSession) SwitchDS(ds Datastore) error {
 	}
 	rc := C.sr_session_switch_ds((*C.sr_session_ctx_t)(s.raw), cds)
 	if rc != C.SR_ERR_OK {
-		return fmt.Errorf("sysrepoadapter: sr_session_switch_ds: %s", C.GoString(C.sr_strerror(int(rc))))
+		return fmt.Errorf("sysrepoadapter: sr_session_switch_ds: %s", C.GoString(C.sr_strerror(rc)))
 	}
 	s.ds = ds
 	return nil
@@ -119,7 +119,7 @@ func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
 	var count C.size_t
 	rc := C.sr_get_items((*C.sr_session_ctx_t)(s.raw), cXPath, 0, 0, &vals, &count)
 	if rc != C.SR_ERR_OK {
-		return nil, fmt.Errorf("sysrepoadapter: sr_get_items(%s): %s", xpath, C.GoString(C.sr_strerror(int(rc))))
+		return nil, fmt.Errorf("sysrepoadapter: sr_get_items(%s): %s", xpath, C.GoString(C.sr_strerror(rc)))
 	}
 	defer C.sr_free_values(vals, count)
 	n := int(count)
@@ -140,7 +140,7 @@ func (s *cgoSession) Lock(ds Datastore) error {
 	// sr_lock takes a module name; passing NULL locks all modules.
 	rc := C.sr_lock((*C.sr_session_ctx_t)(s.raw), nil, 0)
 	if rc != C.SR_ERR_OK {
-		return fmt.Errorf("sysrepoadapter: sr_lock: %s", C.GoString(C.sr_strerror(int(rc))))
+		return fmt.Errorf("sysrepoadapter: sr_lock: %s", C.GoString(C.sr_strerror(rc)))
 	}
 	return nil
 }
@@ -149,7 +149,7 @@ func (s *cgoSession) Lock(ds Datastore) error {
 func (s *cgoSession) Unlock(ds Datastore) error {
 	rc := C.sr_unlock((*C.sr_session_ctx_t)(s.raw), nil)
 	if rc != C.SR_ERR_OK {
-		return fmt.Errorf("sysrepoadapter: sr_unlock: %s", C.GoString(C.sr_strerror(int(rc))))
+		return fmt.Errorf("sysrepoadapter: sr_unlock: %s", C.GoString(C.sr_strerror(rc)))
 	}
 	return nil
 }
