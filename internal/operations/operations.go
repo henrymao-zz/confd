@@ -22,6 +22,7 @@ type Deps struct {
 	Conn     sysrepoadapter.Conn
 	Encoder  *data.Encoder
 	Sessions *SessionRegistry
+	Session  sysrepoadapter.Session // per-NETCONF-session datastore session (for edit ops)
 }
 
 // SessionState is the per-NETCONF-session state handlers can read/mutate.
@@ -74,11 +75,17 @@ func (r *SessionRegistry) List() []uint64 {
 	return out
 }
 
-// Register all MVP operations onto a dispatcher.
+// Register all operations onto a dispatcher.
 func Register(d *rpc.Dispatcher, deps Deps) {
 	d.Register("get", &getHandler{deps: deps})
 	d.Register("get-config", &getConfigHandler{deps: deps})
 	d.Register("get-schema", &getSchemaHandler{deps: deps})
+	d.Register("edit-config", &editConfigHandler{deps: deps})
+	d.Register("copy-config", &copyConfigHandler{deps: deps})
+	d.Register("delete-config", &deleteConfigHandler{deps: deps})
+	d.Register("commit", &commitHandler{deps: deps})
+	d.Register("discard-changes", &discardChangesHandler{deps: deps})
+	d.Register("validate", &validateHandler{deps: deps})
 	d.Register("lock", &lockHandler{deps: deps})
 	d.Register("unlock", &unlockHandler{deps: deps})
 	d.Register("close-session", &closeSessionHandler{deps: deps})
@@ -105,7 +112,7 @@ func BuildHandlers(deps Deps, sessionID uint64, peerUser string) map[string]tran
 		}
 	}
 
-	for _, op := range []string{"get", "get-config", "get-schema", "lock", "unlock", "close-session", "kill-session"} {
+	for _, op := range []string{"get", "get-config", "get-schema", "edit-config", "copy-config", "delete-config", "commit", "discard-changes", "validate", "lock", "unlock", "close-session", "kill-session"} {
 		handlers[op] = wrap(op)
 	}
 	return handlers

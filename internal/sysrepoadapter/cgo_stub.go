@@ -164,6 +164,79 @@ func (s *cgoSession) Close() error {
 	return nil
 }
 
+// --- edit operations (phase 2) ---
+
+// EditBatch loads a parsed edit tree into the session's staging area.
+func (s *cgoSession) EditBatch(edit *DataNode, defaultOp string) error {
+	// TODO: convert DataNode to lyd_node and call sr_edit_batch.
+	return fmt.Errorf("sysrepoadapter: EditBatch not yet implemented in cgo stub")
+}
+
+// ApplyChanges commits the staged edits to the current datastore.
+func (s *cgoSession) ApplyChanges(timeoutMs uint32) error {
+	rc := C.sr_apply_changes((*C.sr_session_ctx_t)(s.raw), C.uint32_t(timeoutMs))
+	if rc != C.SR_ERR_OK {
+		return fmt.Errorf("sysrepoadapter: sr_apply_changes: %s", C.GoString(C.sr_strerror(rc)))
+	}
+	return nil
+}
+
+// DiscardChanges discards all staged edits.
+func (s *cgoSession) DiscardChanges() error {
+	rc := C.sr_discard_changes((*C.sr_session_ctx_t)(s.raw))
+	if rc != C.SR_ERR_OK {
+		return fmt.Errorf("sysrepoadapter: sr_discard_changes: %s", C.GoString(C.sr_strerror(rc)))
+	}
+	return nil
+}
+
+// Validate validates the current datastore + staged edits without applying.
+func (s *cgoSession) Validate(moduleName string, timeoutMs uint32) error {
+	var cModule *C.char
+	if moduleName != "" {
+		cModule = C.CString(moduleName)
+		defer C.free(unsafe.Pointer(cModule))
+	}
+	rc := C.sr_validate((*C.sr_session_ctx_t)(s.raw), cModule, C.uint32_t(timeoutMs))
+	if rc != C.SR_ERR_OK {
+		return fmt.Errorf("sysrepoadapter: sr_validate: %s", C.GoString(C.sr_strerror(rc)))
+	}
+	return nil
+}
+
+// CopyConfig replaces the current session's datastore with the contents of srcDatastore.
+func (s *cgoSession) CopyConfig(moduleName string, srcDatastore Datastore, timeoutMs uint32) error {
+	var cModule *C.char
+	if moduleName != "" {
+		cModule = C.CString(moduleName)
+		defer C.free(unsafe.Pointer(cModule))
+	}
+	var cds C.sr_datastore_t
+	switch srcDatastore {
+	case Running:
+		cds = C.SR_DS_RUNNING
+	case Startup:
+		cds = C.SR_DS_STARTUP
+	case Candidate:
+		cds = C.SR_DS_CANDIDATE
+	default:
+		cds = C.SR_DS_RUNNING
+	}
+	rc := C.sr_copy_config((*C.sr_session_ctx_t)(s.raw), cModule, cds, C.uint32_t(timeoutMs))
+	if rc != C.SR_ERR_OK {
+		return fmt.Errorf("sysrepoadapter: sr_copy_config: %s", C.GoString(C.sr_strerror(rc)))
+	}
+	return nil
+}
+
+// ReplaceConfig replaces the current session's datastore with the given config tree.
+// If config is nil, the datastore is cleared (used by <delete-config>).
+func (s *cgoSession) ReplaceConfig(moduleName string, config *DataNode, timeoutMs uint32) error {
+	// TODO: convert DataNode to lyd_node and call sr_replace_config.
+	// For now, sr_replace_config with NULL clears the datastore (delete-config).
+	return fmt.Errorf("sysrepoadapter: ReplaceConfig not yet implemented in cgo stub")
+}
+
 // Compile-time checks.
 var _ Adapter = (*CGo)(nil)
 var _ Conn = (*cgoConn)(nil)

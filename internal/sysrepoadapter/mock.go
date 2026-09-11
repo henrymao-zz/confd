@@ -65,9 +65,11 @@ func (c *mockConn) OpenSession(ctx context.Context, user string) (Session, error
 func (c *mockConn) Close() error { return nil }
 
 type mockSession struct {
-	mock *Mock
-	mu   sync.Mutex
-	ds   Datastore
+	mock        *Mock
+	mu          sync.Mutex
+	ds          Datastore
+	pendingEdit *DataNode
+	pendingOp   string
 }
 
 func (s *mockSession) SwitchDS(ds Datastore) error {
@@ -118,6 +120,137 @@ func (s *mockSession) Unlock(ds Datastore) error {
 }
 
 func (s *mockSession) Close() error { return nil }
+
+// --- edit operations (phase 2) ---
+
+func (s *mockSession) EditBatch(edit *DataNode, defaultOp string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if defaultOp == "" {
+		defaultOp = "merge"
+	}
+	if defaultOp != "merge" && defaultOp != "replace" && defaultOp != "none" {
+		return fmt.Errorf("sysrepo: invalid default-operation: %s", defaultOp)
+	}
+	s.pendingEdit = edit
+	s.pendingOp = defaultOp
+	return nil
+}
+
+func (s *mockSession) ApplyChanges(timeoutMs uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingEdit == nil {
+		return nil // nothing staged
+	}
+	s.mock.mu.Lock()
+	defer s.mock.mu.Unlock()
+	root := s.mock.trees[s.ds]
+	if root == nil {
+		root = &DataNode{Name: "root", XPath: "/"}
+		s.mock.trees[s.ds] = root
+	}
+	switch s.pendingOp {
+	case "replace":
+		s.mock.trees[s.ds] = &DataNode{Name: "root", XPath: "/", Children: s.pendingEdit.Children}
+	default: // merge
+		mergeDataNodes(root, s.pendingEdit)
+	}
+	// If we're on the candidate datastore, also copy the result to running.
+	if s.ds == Candidate {
+		s.mock.trees[Running] = cloneDataNode(s.mock.trees[s.ds])
+	}
+	s.pendingEdit = nil
+	s.pendingOp = ""
+	return nil
+}
+
+func (s *mockSession) DiscardChanges() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingEdit = nil
+	s.pendingOp = ""
+	return nil
+}
+
+func (s *mockSession) Validate(moduleName string, timeoutMs uint32) error {
+	// Mock always validates successfully.
+	return nil
+}
+
+func (s *mockSession) CopyConfig(moduleName string, srcDatastore Datastore, timeoutMs uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mock.mu.Lock()
+	defer s.mock.mu.Unlock()
+	src := s.mock.trees[srcDatastore]
+	if src == nil {
+		return ErrNotFound
+	}
+	// Deep copy the source tree.
+	s.mock.trees[s.ds] = cloneDataNode(src)
+	return nil
+}
+
+func (s *mockSession) ReplaceConfig(moduleName string, config *DataNode, timeoutMs uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mock.mu.Lock()
+	defer s.mock.mu.Unlock()
+	if config == nil {
+		// Clear the datastore (delete-config).
+		s.mock.trees[s.ds] = &DataNode{Name: "root", XPath: "/"}
+	} else {
+		s.mock.trees[s.ds] = &DataNode{Name: "root", XPath: "/", Children: config.Children}
+	}
+	return nil
+}
+
+// mergeDataNodes merges src's children into dst. Matching children
+// (by Name) are recursively merged; new children are appended.
+func mergeDataNodes(dst, src *DataNode) {
+	if dst == nil || src == nil {
+		return
+	}
+	for _, srcChild := range src.Children {
+		found := false
+		for _, dstChild := range dst.Children {
+			if dstChild.Name == srcChild.Name {
+				if srcChild.IsLeaf {
+					dstChild.Value = srcChild.Value
+				} else {
+					mergeDataNodes(dstChild, srcChild)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			dst.Children = append(dst.Children, srcChild)
+		}
+	}
+}
+
+// cloneDataNode makes a deep copy of a DataNode tree.
+func cloneDataNode(n *DataNode) *DataNode {
+	if n == nil {
+		return nil
+	}
+	clone := &DataNode{
+		XPath:      n.XPath,
+		Name:       n.Name,
+		NS:         n.NS,
+		Value:      n.Value,
+		IsLeaf:     n.IsLeaf,
+		IsLeafList: n.IsLeafList,
+		IsList:     n.IsList,
+		Key:        n.Key,
+	}
+	for _, c := range n.Children {
+		clone.Children = append(clone.Children, cloneDataNode(c))
+	}
+	return clone
+}
 
 // findInTree walks a DataNode tree looking for a node whose XPath ends with
 // the given path (or starts with it). xpaths in the mock are of the form

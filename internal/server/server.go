@@ -106,7 +106,12 @@ func (s *Server) Close() error {
 
 // buildCapabilities returns the capability URIs for the <hello> message.
 func (s *Server) buildCapabilities() []string {
-	caps := []string{netconf.CapNetConf10, netconf.CapNetConf11}
+	caps := []string{
+		netconf.CapNetConf10,
+		netconf.CapNetConf11,
+		"urn:ietf:params:netconf:capability:candidate:1.0",
+		"urn:ietf:params:netconf:capability:validate:1.1",
+	}
 	for _, m := range s.cache.Modules() {
 		uri := m.Namespace
 		if m.Revision != "" {
@@ -118,12 +123,13 @@ func (s *Server) buildCapabilities() []string {
 }
 
 // buildHandlers returns the operation handler map for transport.ServerLoop.
-func (s *Server) buildHandlers(sessionID uint64, peerUser string) map[string]transport.Handler {
+func (s *Server) buildHandlers(sessionID uint64, peerUser string, dsSession sysrepoadapter.Session) map[string]transport.Handler {
 	deps := operations.Deps{
 		Cache:    s.cache,
 		Conn:     s.conn,
 		Encoder:  s.encoder,
 		Sessions: s.reg,
+		Session:  dsSession,
 	}
 	return operations.BuildHandlers(deps, sessionID, peerUser)
 }
@@ -142,7 +148,19 @@ func (s *Server) ServeTransport(ctx context.Context, sess transport.SessionInter
 	s.reg.Register(state)
 	defer s.reg.Forget(sessionID)
 
-	handlers := s.buildHandlers(sessionID, state.User)
+	// Open a per-NETCONF-session datastore session for edit operations.
+	// If the connection fails to open a session (e.g. Mock without
+	// edit support), Session will be nil and edit ops will return an
+	// error; read-only ops fall back to opening a short-lived session.
+	var dsSession sysrepoadapter.Session
+	if s.conn != nil {
+		dsSession, _ = s.conn.OpenSession(ctx, state.User)
+	}
+	if dsSession != nil {
+		defer dsSession.Close()
+	}
+
+	handlers := s.buildHandlers(sessionID, state.User, dsSession)
 	caps := s.buildCapabilities()
 
 	return transport.ServerLoop(sess, handlers, caps, sessionID, state.User)

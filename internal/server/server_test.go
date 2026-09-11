@@ -239,7 +239,7 @@ func TestServer_UnknownOp(t *testing.T) {
 	defer srv.Close()
 	clientHandshake(t, client)
 
-	if err := sendRPC(client, "404", "edit-config"); err != nil {
+	if err := sendRPC(client, "404", "bogus-op"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	reply, err := readRaw(client)

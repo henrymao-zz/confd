@@ -104,6 +104,32 @@ type Session interface {
 	Get(ctx context.Context, xpath string) (*DataNode, error)
 	Lock(ds Datastore) error
 	Unlock(ds Datastore) error
+
+	// --- edit operations (phase 2) ---
+
+	// EditBatch loads a parsed edit tree into the session's staging area.
+	// defaultOp is "merge", "replace", or "none" (RFC 6241 §7.2).
+	EditBatch(edit *DataNode, defaultOp string) error
+
+	// ApplyChanges commits the staged edits to the current datastore.
+	ApplyChanges(timeoutMs uint32) error
+
+	// DiscardChanges discards all staged edits.
+	DiscardChanges() error
+
+	// Validate validates the current datastore + staged edits without
+	// applying them.
+	Validate(moduleName string, timeoutMs uint32) error
+
+	// CopyConfig replaces the current session's datastore with the
+	// contents of srcDatastore.
+	CopyConfig(moduleName string, srcDatastore Datastore, timeoutMs uint32) error
+
+	// ReplaceConfig replaces the current session's datastore with the
+	// given config tree. If config is nil, the datastore is cleared
+	// (used by <delete-config>).
+	ReplaceConfig(moduleName string, config *DataNode, timeoutMs uint32) error
+
 	Close() error
 }
 
