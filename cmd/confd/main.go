@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/example/confd/internal/cli"
 	"github.com/example/confd/internal/config"
 	"github.com/example/confd/internal/pluginhost"
 	"github.com/example/confd/internal/server"
@@ -20,9 +21,12 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, config.Default())
-		fmt.Fprintln(os.Stderr, "usage: confd <serve|schema-list> [flags]")
-		os.Exit(2)
+		// No subcommand → interactive CLI shell
+		if err := cli.New().Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "confd:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	switch os.Args[1] {
 	case "serve":
@@ -35,10 +39,25 @@ func main() {
 			fmt.Fprintln(os.Stderr, "confd:", err)
 			os.Exit(1)
 		}
+	case "help", "-h", "--help":
+		printUsage()
 	default:
+		// Try as a CLI command (e.g., "confd connect 127.0.0.1:830")
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
+		printUsage()
 		os.Exit(2)
 	}
+}
+
+func printUsage() {
+	fmt.Fprintln(os.Stderr, `confd - Go-based NETCONF server and CLI
+
+Usage:
+  confd                         Interactive NETCONF CLI shell
+  confd serve [flags]           Start the NETCONF server
+  confd schema-list [flags]     List loaded YANG modules
+
+Run 'confd help' for more information.`)
 }
 
 func runServe(args []string) error {
