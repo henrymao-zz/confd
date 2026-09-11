@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/xml"
 	"io"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"nemith.io/netconf"
+	nemithtransport "nemith.io/netconf/transport"
 
 	"github.com/example/confd/internal/sysrepoadapter"
-	"github.com/example/confd/internal/transport"
 )
 
 func yangDir(t *testing.T) string {
@@ -60,7 +61,27 @@ func newTestServer(t *testing.T) *Server {
 	return srv
 }
 
-// --- test helpers using nemith framer ---
+// pipeSession is an in-memory test transport that satisfies
+// transport.SessionInterface. It wraps a net.Pipe connection with
+// nemith's Framer.
+type pipeSession struct {
+	framer *nemithtransport.Framer
+	conn   net.Conn
+}
+
+func (s *pipeSession) MsgReader() (io.ReadCloser, error) { return s.framer.MsgReader() }
+func (s *pipeSession) MsgWriter() (io.WriteCloser, error) { return s.framer.MsgWriter() }
+func (s *pipeSession) Upgrade()                           { s.framer.Upgrade() }
+func (s *pipeSession) Close() error                        { return s.conn.Close() }
+func (s *pipeSession) PeerUser() string                   { return "test" }
+
+// newPipe returns a pair of connected pipeSessions (client, server).
+func newPipe() (*pipeSession, *pipeSession) {
+	ca, cb := net.Pipe()
+	client := &pipeSession{framer: nemithtransport.NewFramer(ca, ca), conn: ca}
+	server := &pipeSession{framer: nemithtransport.NewFramer(cb, cb), conn: cb}
+	return client, server
+}
 
 func writeMsg(tr interface{ MsgWriter() (io.WriteCloser, error) }, v any) error {
 	w, err := tr.MsgWriter()
@@ -103,7 +124,7 @@ func readRaw(tr interface{ MsgReader() (io.ReadCloser, error) }) (string, error)
 
 // clientHandshake reads the server <hello>, sends a client <hello>
 // advertising base:1.1, and upgrades to chunked framing.
-func clientHandshake(t *testing.T, tr *transport.PipeTransport) {
+func clientHandshake(t *testing.T, tr *pipeSession) {
 	t.Helper()
 	hello, err := readMsg[netconf.Hello](tr)
 	if err != nil {
@@ -126,20 +147,20 @@ type rpcStruct struct {
 	Inner     string   `xml:",innerxml"`
 }
 
-func sendRPC(tr *transport.PipeTransport, msgID, op string) error {
+func sendRPC(tr *pipeSession, msgID, op string) error {
 	return writeMsg(tr, &rpcStruct{MessageID: msgID, Inner: "<" + op + "/>"})
 }
 
-func sendRPCBody(tr *transport.PipeTransport, msgID, body string) error {
+func sendRPCBody(tr *pipeSession, msgID, body string) error {
 	return writeMsg(tr, &rpcStruct{MessageID: msgID, Inner: body})
 }
 
 // startServerPipe creates a test server, a transport pipe, and starts
 // ServeTransport on the server side. Returns the client pipe transport.
-func startServerPipe(t *testing.T) (*Server, *transport.PipeTransport, chan error) {
+func startServerPipe(t *testing.T) (*Server, *pipeSession, chan error) {
 	t.Helper()
 	srv := newTestServer(t)
-	client, server := transport.NewPipe()
+	client, server := newPipe()
 	done := make(chan error, 1)
 	go func() { done <- srv.ServeTransport(context.Background(), server) }()
 	return srv, client, done
