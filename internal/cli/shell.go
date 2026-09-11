@@ -224,7 +224,10 @@ func (s *Shell) cmdShow(args []string) error {
 	if s.session == nil {
 		return fmt.Errorf("not connected")
 	}
-	switch flagValue(args, "", "") {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: show <session|capabilities>")
+	}
+	switch args[0] {
 	case "session":
 		fmt.Printf("Session ID: %d\n", s.session.SessionID())
 		fmt.Printf("Client capabilities: %d\n", s.session.ClientCaps().Len())
@@ -235,10 +238,7 @@ func (s *Shell) cmdShow(args []string) error {
 			fmt.Printf("  %s\n", cap)
 		}
 	default:
-		if len(args) > 0 {
-			return fmt.Errorf("unknown show: %s", args[0])
-		}
-		return fmt.Errorf("usage: show <session|capabilities>")
+		return fmt.Errorf("unknown show: %s (use 'show session' or 'show capabilities')", args[0])
 	}
 	return nil
 }
