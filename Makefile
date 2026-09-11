@@ -2,7 +2,6 @@
 
 GO ?= go
 PLUGINS_DIR ?= /usr/lib/confd/plugins
-PLUGINS_SRC ?= ./src/sysrepo-plugins
 
 build:
 	$(GO) build ./...
@@ -35,42 +34,26 @@ run: build
 # from source. libyang-cpp is pinned to a pre-v6 commit for libyang 5.x.
 # Requires: cmake, g++, libnl-3-dev, libnl-route-3-dev, libsystemd-dev,
 # libsdbus-c++-dev, libnftables-dev, libsensors-dev, libproc2-dev,
-# nlohmann-json3-dev, pkg-config.
+# nlohmann-json3-dev, doctest-dev, pkg-config.
 build-deps:
-	@echo "Building libyang (v5.8.6) from submodule..."
-	rm -rf /tmp/confd-build/libyang
-	mkdir -p /tmp/confd-build/libyang
-	cd /tmp/confd-build/libyang && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/src/libyang && make -j$$(nproc) && sudo make install
-	@echo "Building sysrepo (v5.1.0) from submodule..."
-	rm -rf /tmp/confd-build/sysrepo
-	mkdir -p /tmp/confd-build/sysrepo
-	cd /tmp/confd-build/sysrepo && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNOTIFD_SETUP=OFF -DENABLE_SYSREPO_NOTIFD=OFF $(CURDIR)/src/sysrepo && make -j$$(nproc) && sudo make install
-	@echo "Building libyang-cpp from submodule (pinned for libyang 5.x)..."
-	rm -rf /tmp/confd-build/libyang-cpp /tmp/confd-build/libyang-cpp-src
-	mkdir -p /tmp/confd-build/libyang-cpp
-	# Copy source to /tmp (mount doesn't allow in-place sed or builds)
-	rsync -a --exclude='sed*' --exclude='build' $(CURDIR)/src/libyang-cpp/ /tmp/confd-build/libyang-cpp-src/
-	cd /tmp/confd-build/libyang-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF /tmp/confd-build/libyang-cpp-src && make -j$$(nproc) && sudo make install
-	@echo "Building sysrepo-cpp from submodule..."
-	rm -rf /tmp/confd-build/sysrepo-cpp
-	mkdir -p /tmp/confd-build/sysrepo-cpp
-	cd /tmp/confd-build/sysrepo-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF $(CURDIR)/src/sysrepo-cpp && make -j$$(nproc) && sudo make install
-	@echo "Building umgmt from submodule..."
-	rm -rf /tmp/confd-build/umgmt /tmp/confd-build/umgmt-src
-	mkdir -p /tmp/confd-build/umgmt
-	# Copy umgmt source (skip nested submodule — it has mount permission issues)
-	rsync -a --exclude='build' --exclude='deps/uthash' $(CURDIR)/src/umgmt/ /tmp/confd-build/umgmt-src/
-	# Clone uthash separately into /tmp
-	git clone --depth 1 https://github.com/troydhanson/uthash.git /tmp/confd-build/umgmt-src/deps/uthash 2>/dev/null || true
-	cd /tmp/confd-build/umgmt && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_POLICY_VERSION_MINIMUM=3.5 /tmp/confd-build/umgmt-src && make -j$$(nproc) && sudo make install
+	@echo "Building libyang (v5.8.6)..."
+	cd src/libyang && mkdir -p build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local .. && make -j$$(nproc) && sudo make install
+	@echo "Building sysrepo (v5.1.0)..."
+	cd src/sysrepo && mkdir -p build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNOTIFD_SETUP=OFF -DENABLE_SYSREPO_NOTIFD=OFF .. && make -j$$(nproc) && sudo make install
+	@echo "Building libyang-cpp (pinned for libyang 5.x)..."
+	cd src/libyang-cpp && mkdir -p build && cd build && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF .. && make -j$$(nproc) && sudo make install
+	@echo "Building sysrepo-cpp..."
+	cd src/sysrepo-cpp && mkdir -p build && cd build && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF .. && make -j$$(nproc) && sudo make install
+	@echo "Building umgmt..."
+	cd src/umgmt && mkdir -p build && cd build && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_POLICY_VERSION_MINIMUM=3.5 .. && make -j$$(nproc) && sudo make install
 	@echo "Done. Run 'sudo ldconfig' to refresh the library cache."
 
 plugins: build-deps
-	@echo "Building sysrepo-plugins from $(PLUGINS_SRC)..."
-	cd $(PLUGINS_SRC) && rm -rf build && mkdir -p build && cd build && cmake -DSYSTEMD_IFINDEX=1 -DBUILD_OS_METRICS_PLUGIN=OFF .. && make -j$$(nproc)
+	@echo "Building sysrepo-plugins..."
+	cd src/sysrepo-plugins && mkdir -p build && cd build && cmake -DSYSTEMD_IFINDEX=1 -DBUILD_OS_METRICS_PLUGIN=OFF .. && make -j$$(nproc)
 	@echo "Copying plugin .so files to $(PLUGINS_DIR)..."
 	sudo mkdir -p $(PLUGINS_DIR)
-	sudo cp $(PLUGINS_SRC)/build/plugins/*/libsrplg-*.so $(PLUGINS_DIR)/ 2>/dev/null || true
+	sudo cp src/sysrepo-plugins/build/plugins/*/libsrplg-*.so $(PLUGINS_DIR)/ 2>/dev/null || true
 	@echo "Done. Plugins installed to $(PLUGINS_DIR)"
 
 install: build
