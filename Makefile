@@ -1,4 +1,4 @@
-.PHONY: configure build test clean run install
+.PHONY: configure build clean run install
 
 GO ?= go
 PLUGINS_DIR ?= /usr/lib/confd/plugins
@@ -36,17 +36,13 @@ configure:
 build: configure
 	$(GO) build -tags sysrepo -o confd ./cmd/confd
 
-# Run tests with the mock adapter (no cgo, no sysrepo needed).
-test:
-	$(GO) test ./...
-
 clean:
 	rm -f coverage.out confd
 
 run: build
-	./confd serve --bind=127.0.0.1:830 --password=confd
+	sudo ./confd serve --bind=127.0.0.1:830 --password=confd
 
-install: build
+install:
 	install -D confd $(DESTDIR)/usr/bin/confd
 	mkdir -p $(DESTDIR)/etc/confd
 	cp confd.yaml $(DESTDIR)/etc/confd/confd.yaml
