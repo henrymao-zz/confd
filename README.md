@@ -22,7 +22,7 @@ A Go-based NETCONF server backed by **sysrepo**, using **[goyang](https://github
 
 confd is a **single daemon** that bundles three roles into one Go process:
 
-1. **NETCONF server** — SSH transport, RFC 6242 framing (nemith `transport.Framer`), `<hello>` capability negotiation (nemith `Hello`/`CapabilitySet`), `<rpc>` dispatch (`nettrans.ServerLoop`), and the protocol operation handlers (`<get>`, `<get-config>`, `<get-schema>`, `<lock>`, `<close-session>`, `<kill-session>`).
+1. **NETCONF server** — SSH transport, RFC 6242 framing (nemith `transport.Framer`), `<hello>` capability negotiation (nemith `Hello`/`CapabilitySet`), `<rpc>` dispatch (`transport.ServerLoop`), and the protocol operation handlers (`<get>`, `<get-config>`, `<get-schema>`, `<lock>`, `<close-session>`, `<kill-session>`).
 2. **sysrepo datastore peer** — calls `sr_connect()` to open the shared-memory datastore; each NETCONF session gets its own `sr_session_ctx_t`.
 3. **Plugin host** (replaces `sysrepo-plugind`) — `dlopen`s the shipped `libsrplg-*.so` artifacts, gives each a `sr_session_start`, calls `sr_plugin_init_cb` (which starts the plugin's own event loop), and on shutdown calls `sr_plugin_cleanup_cb` in reverse load order.
 
@@ -38,7 +38,7 @@ SSH client ─▶ transport.NewSSH() ─▶ Transport (SSH channel)
                            transport.NewNemithTransport() wraps with
                            nemith's transport.Framer
                                        │
-                           nettrans.ServerLoop()
+                           transport.ServerLoop()
                              ├── <hello> exchange (netconf.Hello)
                              ├── base:1.1 negotiation (Framer.Upgrade)
                              └── <rpc> loop → handlers → <rpc-reply>
@@ -50,13 +50,13 @@ SSH client ─▶ transport.NewSSH() ─▶ Transport (SSH channel)
                                          └── sysrepoadapter (Mock | CGo)
 ```
 
-- **`internal/nettrans`** — server-side NETCONF transport + dispatch loop on top of nemith's `transport.Framer` and `netconf.Hello`/`RPCError` types.
+* **`internal/transport`** — SSH listener + nemith framing + server-side dispatch loop (`ServerLoop`).
 - **`internal/transport`** — SSH listener + channel + subsystem handling; wraps the SSH channel with nemith's `Framer` via `NewNemithTransport()`.
 - **`internal/schema`** — the only package that imports goyang (schema cache, capabilities, `get-schema`).
 - **`internal/sysrepoadapter`** — cgo-free `Adapter`/`Session`/`DataNode` interface; `Mock` (pure Go) or `CGo` (behind `sysrepo` build tag).
 - **`internal/pluginhost`** — replaces `sysrepo-plugind`; `NoopHost` (default), `MockHost` (tests), or `CGoHost` (behind `sysrepo` build tag, uses `dlopen`).
 - **`internal/data`** — `DataNode` → NETCONF XML encoder (no Go library does this).
-- **`internal/rpc`** — bridge: operations use `rpc.Dispatcher`/`rpc.Context` internally; `operations.BuildHandlers()` wraps them as `nettrans.Handler`.
+- **`internal/rpc`** — bridge: operations use `rpc.Dispatcher`/`rpc.Context` internally; `operations.BuildHandlers()` wraps them as `transport.Handler`.
 - Everything except `internal/sysrepoadapter` (cgo) and `internal/pluginhost` (cgo) is pure Go and fully testable without cgo.
 
 ## Build
@@ -205,7 +205,7 @@ confd/
 ├── internal/
 │   ├── config/            # flags + defaults
 │   ├── transport/         # SSH listener + channel + subsystem handling
-│   ├── nettrans/          # server-side NETCONF transport + dispatch (nemith)
+
 │   ├── rpc/               # <rpc> dispatch, <rpc-error> (bridge layer)
 │   ├── operations/        # get, get-config, get-schema, lock, unlock, sessions
 │   ├── schema/            # goyang-backed cache (the only goyang importer)

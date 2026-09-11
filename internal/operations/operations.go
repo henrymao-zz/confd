@@ -10,10 +10,10 @@ import (
 	"strings"
 
 	"github.com/example/confd/internal/data"
-	"github.com/example/confd/internal/nettrans"
 	"github.com/example/confd/internal/rpc"
 	"github.com/example/confd/internal/schema"
 	"github.com/example/confd/internal/sysrepoadapter"
+	"github.com/example/confd/internal/transport"
 )
 
 // Deps are the shared dependencies passed to every operation handler.
@@ -85,18 +85,18 @@ func Register(d *rpc.Dispatcher, deps Deps) {
 	d.Register("kill-session", &killSessionHandler{deps: deps})
 }
 
-// BuildHandlers returns the operation handler map for nettrans.ServerLoop.
+// BuildHandlers returns the operation handler map for transport.ServerLoop.
 // Each handler takes (msgID, innerXML) and returns (replyBody, error).
 // The replyBody is raw XML bytes to embed in <rpc-reply>; the error is
-// converted to an <rpc-error> by nettrans.ServerLoop.
-func BuildHandlers(deps Deps, sessionID uint64, peerUser string) map[string]nettrans.Handler {
+// converted to an <rpc-error> by transport.ServerLoop.
+func BuildHandlers(deps Deps, sessionID uint64, peerUser string) map[string]transport.Handler {
 	d := rpc.NewDispatcher()
 	Register(d, deps)
 	rctx := rpc.Context{SessionID: sessionID, PeerUser: peerUser, Dispatcher: d}
 
-	handlers := make(map[string]nettrans.Handler)
+	handlers := make(map[string]transport.Handler)
 
-	wrap := func(opName string) nettrans.Handler {
+	wrap := func(opName string) transport.Handler {
 		return func(msgID string, innerXML []byte) (any, error) {
 			rpcXML := fmt.Sprintf(`<rpc message-id="%s" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">%s</rpc>`,
 				msgID, string(innerXML))

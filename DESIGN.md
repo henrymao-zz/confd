@@ -694,10 +694,10 @@ the maintained successor to Juniper/go-netconf).
 | `internal/data` | No Go library encodes YANG data tree → NETCONF XML (ydk-go is archived + CGO) |
 | `internal/schema` | goyang schema parsing, unrelated to NETCONF protocol |
 | `internal/operations` | Handlers are confd-specific (call sysrepoadapter, use schema cache) |
-| `internal/rpc` | Bridge: operations use `rpc.Dispatcher`/`rpc.Context` internally; `operations.BuildHandlers()` wraps them as `nettrans.Handler` |
+| `internal/rpc` | Bridge: operations use `rpc.Dispatcher`/`rpc.Context` internally; `operations.BuildHandlers()` wraps them as `transport.Handler` |
 | `internal/transport` | SSH listener + channel + subsystem handling stays; only framing was replaced |
 
-### 16.3 New package: `internal/nettrans`
+### 16.3 `internal/transport` (merged)
 
 A thin (~200 LoC) adapter that fills the server-side gap in nemith (which
 ships only a client `Session`):
@@ -716,7 +716,7 @@ SSH client ─▶ transport.NewSSH() ─▶ Transport (SSH channel)
                            transport.NewNemithTransport() wraps with
                            nemith's transport.Framer
                                        │
-                           nettrans.ServerLoop()
+                           transport.ServerLoop()
                              ├── <hello> exchange (netconf.Hello)
                              ├── base:1.1 negotiation (Framer.Upgrade)
                              └── <rpc> loop → handlers → <rpc-reply>

@@ -18,23 +18,20 @@ func TestSSH_ListenerHandshake(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		srv, err := ln.Accept()
+		sess, err := ln.Accept()
 		if err != nil {
 			done <- err
 			return
 		}
-		defer srv.Close()
-		// Wrap the server's raw channel with nemith's framer.
-		nt := NewNemithTransport(srv)
-		r, err := nt.MsgReader()
+		defer sess.Close()
+		r, err := sess.MsgReader()
 		if err != nil {
 			done <- err
 			return
 		}
 		defer r.Close()
-		data, err := io.ReadAll(r)
+		_, err = io.ReadAll(r)
 		done <- err
-		_ = data
 	}()
 
 	cliCfg := &ssh.ClientConfig{
@@ -53,7 +50,6 @@ func TestSSH_ListenerHandshake(t *testing.T) {
 	}
 	defer ch.Close()
 
-	// Write a base:1.0 framed message using nemith's framer on the client side.
 	framer := transport.NewFramer(ch, ch)
 	w, err := framer.MsgWriter()
 	if err != nil {

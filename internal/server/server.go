@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/example/confd/internal/data"
-	"github.com/example/confd/internal/nettrans"
 	"github.com/example/confd/internal/operations"
 	"github.com/example/confd/internal/pluginhost"
 	"github.com/example/confd/internal/schema"
@@ -118,8 +117,8 @@ func (s *Server) buildCapabilities() []string {
 	return caps
 }
 
-// buildHandlers returns the operation handler map for nettrans.ServerLoop.
-func (s *Server) buildHandlers(sessionID uint64, peerUser string) map[string]nettrans.Handler {
+// buildHandlers returns the operation handler map for transport.ServerLoop.
+func (s *Server) buildHandlers(sessionID uint64, peerUser string) map[string]transport.Handler {
 	deps := operations.Deps{
 		Cache:    s.cache,
 		Conn:     s.conn,
@@ -129,24 +128,24 @@ func (s *Server) buildHandlers(sessionID uint64, peerUser string) map[string]net
 	return operations.BuildHandlers(deps, sessionID, peerUser)
 }
 
-// ServeTransport runs the NETCONF protocol over a single Transport (one
-// session). It blocks until the session ends or the transport closes.
-func (s *Server) ServeTransport(ctx context.Context, t transport.Transport) error {
-	defer t.Close()
+// ServeTransport runs the NETCONF protocol over a single session.
+// It blocks until the session ends or the transport closes.
+// sess must implement MsgReader/MsgWriter/Upgrade/Close/PeerUser
+// (i.e. *transport.Session or *transport.PipeTransport).
+func (s *Server) ServeTransport(ctx context.Context, sess transport.SessionInterface) error {
+	defer sess.Close()
 	sessionID := s.reg.Alloc()
 	state := &operations.SessionState{
 		ID:   sessionID,
-		User: t.PeerUser(),
+		User: sess.PeerUser(),
 	}
 	s.reg.Register(state)
 	defer s.reg.Forget(sessionID)
 
-	// Wrap the transport's SSH channel with nemith's framer.
-	tr := transport.NewNemithTransport(t)
 	handlers := s.buildHandlers(sessionID, state.User)
 	caps := s.buildCapabilities()
 
-	return nettrans.ServerLoop(tr, handlers, caps, sessionID, state.User)
+	return transport.ServerLoop(sess, handlers, caps, sessionID, state.User)
 }
 
 // ListenAndServe starts an SSH listener and serves sessions until ctx is

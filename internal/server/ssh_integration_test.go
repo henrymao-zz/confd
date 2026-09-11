@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"nemith.io/netconf"
-	"nemith.io/netconf/transport"
+	nemithtransport "nemith.io/netconf/transport"
 
 	"github.com/example/confd/internal/sysrepoadapter"
-	tr "github.com/example/confd/internal/transport"
+	"github.com/example/confd/internal/transport"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -35,7 +35,7 @@ func TestServer_SSHEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ln, err := tr.NewSSH(tr.SSHConfig{
+	ln, err := transport.NewSSH(transport.SSHConfig{
 		Bind:     "127.0.0.1:0",
 		Password: "s3cret",
 	})
@@ -64,7 +64,7 @@ func TestServer_SSHEndToEnd(t *testing.T) {
 	defer ch.Close()
 
 	// Use nemith's framer on the client side too.
-	framer := transport.NewFramer(ch, ch)
+	framer := nemithtransport.NewFramer(ch, ch)
 
 	// Read server hello.
 	hello, err := readFramed[netconf.Hello](framer)
@@ -112,7 +112,7 @@ func TestServer_SSHEndToEnd(t *testing.T) {
 	_, _ = readRawFramed(framer)
 }
 
-func writeFramedRaw(f *transport.Framer, xmlStr string) error {
+func writeFramedRaw(f *nemithtransport.Framer, xmlStr string) error {
 	w, err := f.MsgWriter()
 	if err != nil {
 		return err
@@ -124,7 +124,7 @@ func writeFramedRaw(f *transport.Framer, xmlStr string) error {
 	return w.Close()
 }
 
-func writeFramed(f *transport.Framer, v any) error {
+func writeFramed(f *nemithtransport.Framer, v any) error {
 	w, err := f.MsgWriter()
 	if err != nil {
 		return err
@@ -136,7 +136,7 @@ func writeFramed(f *transport.Framer, v any) error {
 	return w.Close()
 }
 
-func readFramed[T any](f *transport.Framer) (T, error) {
+func readFramed[T any](f *nemithtransport.Framer) (T, error) {
 	var zero T
 	r, err := f.MsgReader()
 	if err != nil {
@@ -150,7 +150,7 @@ func readFramed[T any](f *transport.Framer) (T, error) {
 	return v, nil
 }
 
-func readRawFramed(f *transport.Framer) (string, error) {
+func readRawFramed(f *nemithtransport.Framer) (string, error) {
 	r, err := f.MsgReader()
 	if err != nil {
 		return "", err

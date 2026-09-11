@@ -11,8 +11,8 @@ import (
 
 	"nemith.io/netconf"
 
-	"github.com/example/confd/internal/nettrans"
 	"github.com/example/confd/internal/sysrepoadapter"
+	"github.com/example/confd/internal/transport"
 )
 
 func yangDir(t *testing.T) string {
@@ -103,7 +103,7 @@ func readRaw(tr interface{ MsgReader() (io.ReadCloser, error) }) (string, error)
 
 // clientHandshake reads the server <hello>, sends a client <hello>
 // advertising base:1.1, and upgrades to chunked framing.
-func clientHandshake(t *testing.T, tr *nettrans.PipeTransport) {
+func clientHandshake(t *testing.T, tr *transport.PipeTransport) {
 	t.Helper()
 	hello, err := readMsg[netconf.Hello](tr)
 	if err != nil {
@@ -126,40 +126,23 @@ type rpcStruct struct {
 	Inner     string   `xml:",innerxml"`
 }
 
-func sendRPC(tr *nettrans.PipeTransport, msgID, op string) error {
+func sendRPC(tr *transport.PipeTransport, msgID, op string) error {
 	return writeMsg(tr, &rpcStruct{MessageID: msgID, Inner: "<" + op + "/>"})
 }
 
-func sendRPCBody(tr *nettrans.PipeTransport, msgID, body string) error {
+func sendRPCBody(tr *transport.PipeTransport, msgID, body string) error {
 	return writeMsg(tr, &rpcStruct{MessageID: msgID, Inner: body})
 }
 
-// startServerPipe creates a test server, a nettrans pipe, and starts
+// startServerPipe creates a test server, a transport pipe, and starts
 // ServeTransport on the server side. Returns the client pipe transport.
-func startServerPipe(t *testing.T) (*Server, *nettrans.PipeTransport, chan error) {
+func startServerPipe(t *testing.T) (*Server, *transport.PipeTransport, chan error) {
 	t.Helper()
 	srv := newTestServer(t)
-	client, server := nettrans.NewPipe()
+	client, server := transport.NewPipe()
 	done := make(chan error, 1)
-	// We need a transport.Transport adapter for ServeTransport.
-	// Use a pipeTransportAdapter that implements transport.Transport.
-	adapter := &pipeAdapter{tr: server}
-	go func() { done <- srv.ServeTransport(context.Background(), adapter) }()
+	go func() { done <- srv.ServeTransport(context.Background(), server) }()
 	return srv, client, done
-}
-
-// pipeAdapter wraps a nettrans.PipeTransport to satisfy the
-// transport.Transport interface (needed by ServeTransport).
-type pipeAdapter struct {
-	tr *nettrans.PipeTransport
-}
-
-func (p *pipeAdapter) PeerUser() string { return "test" }
-
-func (p *pipeAdapter) Close() error { return p.tr.Close() }
-
-func (p *pipeAdapter) RawChannel() (io.Reader, io.Writer) {
-	return p.tr.RawConn()
 }
 
 func TestServer_GetConfig(t *testing.T) {

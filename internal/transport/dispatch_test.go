@@ -1,4 +1,4 @@
-package nettrans
+package transport
 
 import (
 	"encoding/xml"
@@ -9,8 +9,6 @@ import (
 	"nemith.io/netconf"
 )
 
-// TestServerLoop_BasicExchange verifies the basic hello exchange and
-// base:1.1 upgrade, then a get-config RPC and a close-session.
 func TestServerLoop_BasicExchange(t *testing.T) {
 	client, server := NewPipe()
 
@@ -29,7 +27,6 @@ func TestServerLoop_BasicExchange(t *testing.T) {
 		done <- ServerLoop(server, handlers, caps, 1, "test")
 	}()
 
-	// --- client side ---
 	hello, err := readMsg[netconf.Hello](client)
 	if err != nil {
 		t.Fatalf("read server hello: %v", err)
