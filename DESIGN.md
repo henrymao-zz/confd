@@ -1,29 +1,32 @@
 # confd — Go-based NETCONF Server & Single-Daemon Design
 
-> `confd` is a Go-based NETCONF server backed by **sysrepo**, using
+> `confd` is a Go-based NETCONF server and CLI backed by **sysrepo**, using
 > **[goyang](https://github.com/openconfig/goyang)** as the YANG schema
-> parser. It is a lighter, Go-native alternative to Netopeer2. It serves
-> NETCONF over SSH (RFC 6241/6242) and, in a single process, replaces both
-> `netopeer2-server` and `sysrepo-plugind` by embedding the plugin host
-> that loads Telekom sysrepo-plugins.
+> parser and **[nemith.io/netconf](https://github.com/nemith/netconf)** for
+> the NETCONF protocol layer. It is a lighter, Go-native alternative to
+> Netopeer2. It serves NETCONF over SSH (RFC 6241/6242) and, in a single
+> process, replaces both `netopeer2-server` and `sysrepo-plugind` by
+> embedding the plugin host that loads Telekom sysrepo-plugins. It also
+> includes an interactive CLI shell (similar to `netopeer2-cli`) invoked
+> by running `confd` with no subcommand.
 
 ---
 
 ## 1. Goals & Non-Goals
 
-### 1.1 Goals (MVP)
+### 1.1 Goals
 - Listen on SSH (RFC 6242) for NETCONF 1.1 sessions.
-- Implement the NETCONF base protocol operations needed to **retrieve**
-  configuration and state data:
-  - `<get>`, `<get-config>` (with `--source` running/startup/candidate)
-  - `<get>` with `<filter>` (subtree + XPath)
-  - `<lock>`, `<unlock>`, `<close-session>`, `<kill-session>` (housekeeping)
-  - `<get-schema>` (RFC 6022) — cheap once goyang is wired in.
+- Implement all NETCONF base protocol operations:
+  - `<get>`, `<get-config>`, `<edit-config>`, `<copy-config>`, `<delete-config>`
+  - `<lock>`, `<unlock>`, `<close-session>`, `<kill-session>`
+  - `<commit>`, `<discard-changes>`, `<validate>`, `<get-schema>` (RFC 6022)
 - Expose data stored in **sysrepo** (running + operational datastores).
-- Validate GET reply payloads against the YANG schema parsed by **goyang**.
-- Produce standards-compliant `<ok/>` / `<rpc-error>` responses.
 - **Single-daemon mode**: confd replaces `sysrepo-plugind` by loading
   `libsrplg-*.so` plugins via `dlopen` in the same process.
+- **YANG provisioning**: confd installs missing YANG modules into sysrepo
+  on startup (no manual `sysrepoctl` step).
+- **Interactive CLI shell**: `confd` (no subcommand) enters an interactive
+  NETCONF client shell similar to `netopeer2-cli`.
 
 ### 1.2 Non-Goals
 - NACM (RFC 6536) — future phase.
@@ -743,16 +746,20 @@ SSH client ─▶ transport.NewSSH() ─▶ Transport (SSH channel)
 
 ## 17. Summary
 
-`confd` is a Go NETCONF server whose MVP focuses on **read-only retrieval of
-configuration and operational data** from sysrepo. It uses **goyang** as the
-schema layer (capabilities, `get-schema`, filter validation), **sysrepo +
-libyang** as the data layer (datastore access, XML serialization, error
+`confd` is a Go NETCONF server and CLI backed by **sysrepo**. It implements
+all RFC 6241 base operations (`get`, `get-config`, `edit-config`,
+`copy-config`, `delete-config`, `commit`, `discard-changes`, `validate`,
+`lock`, `unlock`, `get-schema`, session management). It uses **goyang** as
+the schema layer (capabilities, `get-schema`, filter validation), **sysrepo
++ libyang** as the data layer (datastore access, XML serialization, error
 formatting), and **nemith.io/netconf** for the NETCONF protocol layer
-(framing, hello, message types). In single-daemon mode it also **replaces
+(framing, hello, message types). In single-daemon mode it **replaces
 `sysrepo-plugind`** by hosting Telekom sysrepo-plugins via `dlopen` in the
-same process. The layers (schema, data, plugins, protocol) are deliberately
-separated by interfaces so that each can be swapped, mocked, or replaced
-without touching the others.
+same process, and **auto-provisions YANG modules** into sysrepo on startup.
+It also includes an **interactive CLI shell** (similar to `netopeer2-cli`)
+for connecting to any NETCONF server. The layers (schema, data, plugins,
+protocol, CLI) are deliberately separated by interfaces so that each can
+be swapped, mocked, or replaced without touching the others.
 ---
 
 ## 18. NETCONF Edit Operations (`<edit-config>`, `<copy-config>`, `<delete-config>`, `<commit>`, `<discard-changes>`, `<validate>`)
@@ -839,10 +846,89 @@ Extended with three methods:
 The mock implementation tracks installed modules in memory; the cgo
 implementation uses `sr_get_module_info` / `sr_install_module`.
 
-### `--yang-manifest` flag
+### Consolidated `confd.yaml` config
 
-The `--yang-manifest` flag replaces the old `--yang-path` flag. YANG
-modules are loaded exclusively from the manifest's `YangDir` values — there
-is no separate `--yang-path` fallback. If no manifest is set, no YANG
-modules are loaded (the goyang cache is empty and no capabilities are
-advertised beyond `:base:1.0` and `:base:1.1`).
+All configuration — SSH, adapter, plugins, and YANG provisioning — is in a
+single `/etc/confd/confd.yaml` file. There is no separate `plugins.yaml`
+manifest. The YANG provisioning specs (`yang_dir`, `modules`, `features`)
+are inline under `plugins.entries` in the same file:
+
+```yaml
+ssh:
+  bind: "0.0.0.0:830"
+  password: ""
+adapter: sysrepo
+plugins:
+  dir: "/usr/lib/confd/plugins"
+  entries:
+    - name: ietf-system
+      yang_dir: /usr/lib/confd/yang/ietf-system
+      modules:
+        - ietf-system@2014-08-06.yang
+      features:
+        ietf-system:
+          - timezone-name
+          - ntp
+  names: [ietf-system, ietf-interfaces]
+```
+
+CLI flags (`--bind`, `--password`, `--adapter`, `--plugins-dir`,
+`--plugin`) override YAML values. The `--config=<path>` flag specifies an
+alternate config file (default: `/etc/confd/confd.yaml`).
+
+---
+
+## 20. Interactive CLI Shell
+
+confd includes an interactive NETCONF client shell (`internal/cli`), invoked
+by running `confd` with no subcommand. It is similar to `netopeer2-cli` —
+it connects to a NETCONF server over SSH and provides a prompt for typing
+NETCONF operations.
+
+### Usage
+
+```
+$ confd
+confd interactive NETCONF shell
+confd> connect 127.0.0.1:830 --user confd --password confd
+Session 1 established
+confd(1)> get-config --source running
+<rpc-reply message-id="1"><data>...</data></rpc-reply>
+confd(1)> edit-config --target running --config '<system xmlns="..."><hostname>new</hostname></system>'
+<ok/>
+confd(1)> quit
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `connect <host:port> [--user] [--password]` | Connect to a NETCONF server |
+| `disconnect` | Close the current session |
+| `get [--filter <xpath>]` | `<get>` (operational datastore) |
+| `get-config --source <ds> [--filter <xpath>]` | `<get-config>` |
+| `edit-config --target <ds> --config <xml>` | `<edit-config>` |
+| `copy-config --target <ds> --source <ds>` | `<copy-config>` |
+| `delete-config --target <startup>` | `<delete-config>` |
+| `lock --target <ds>` / `unlock --target <ds>` | `<lock>` / `<unlock>` |
+| `commit` / `discard-changes` | `<commit>` / `<discard-changes>` |
+| `validate --source <ds>` | `<validate>` |
+| `get-schema --identifier <module>` | `<get-schema>` (RFC 6022) |
+| `kill-session --session-id <N>` | `<kill-session>` |
+| `close-session` | `<close-session>` |
+| `raw <xml>` | Send raw XML as an `<rpc>` and print the reply |
+| `show session` / `show capabilities` | Session info / server capabilities |
+| `help` / `quit` / `exit` | Help / exit |
+
+### Architecture
+
+The CLI shell is a **NETCONF client** (not a server). It uses
+`nemith.io/netconf`'s client `Session` + `transport/ssh.Dial` to connect.
+It does not need the server-side code (`internal/transport.ServerLoop`,
+`internal/operations`, `internal/sysrepoadapter`, etc.) — it is pure Go,
+no cgo/sysrepo/plugins needed.
+
+### Entry point
+
+`cmd/confd/main.go` enters the CLI shell when no subcommand is given.
+`confd serve` starts the server; `confd schema-list` lists modules.
