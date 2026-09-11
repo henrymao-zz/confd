@@ -1,23 +1,26 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestFromFlags(t *testing.T) {
 	cfg, err := FromFlags(Default(), []string{"--bind=127.0.0.1:9000", "--password=secret", "--adapter=sysrepo", "--yang-manifest=/etc/confd/plugins.yaml"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if cfg.SSHBind != "127.0.0.1:9000" {
-		t.Errorf("bind: %q", cfg.SSHBind)
+	if cfg.SSH.Bind != "127.0.0.1:9000" {
+		t.Errorf("bind: %q", cfg.SSH.Bind)
 	}
-	if cfg.SSHPassword != "secret" {
-		t.Errorf("password: %q", cfg.SSHPassword)
+	if cfg.SSH.Password != "secret" {
+		t.Errorf("password: %q", cfg.SSH.Password)
 	}
 	if cfg.Adapter != "sysrepo" {
 		t.Errorf("adapter: %q", cfg.Adapter)
 	}
-	if cfg.YangManifest != "/etc/confd/plugins.yaml" {
-		t.Errorf("yang-manifest: %q", cfg.YangManifest)
+	if cfg.YANG.Manifest != "/etc/confd/plugins.yaml" {
+		t.Errorf("yang-manifest: %q", cfg.YANG.Manifest)
 	}
 }
 
@@ -26,8 +29,8 @@ func TestFromFlags_SpaceForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if cfg.SSHBind != "0.0.0.0:1234" {
-		t.Errorf("bind: %q", cfg.SSHBind)
+	if cfg.SSH.Bind != "0.0.0.0:1234" {
+		t.Errorf("bind: %q", cfg.SSH.Bind)
 	}
 }
 
@@ -40,11 +43,11 @@ func TestFromFlags_Plugins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if cfg.PluginsDir != "/usr/lib/confd/plugins" {
-		t.Errorf("plugins-dir: %q", cfg.PluginsDir)
+	if cfg.Plugins.Dir != "/usr/lib/confd/plugins" {
+		t.Errorf("plugins-dir: %q", cfg.Plugins.Dir)
 	}
-	if len(cfg.Plugins) != 2 || cfg.Plugins[0] != "ietf-system" || cfg.Plugins[1] != "ietf-interfaces" {
-		t.Errorf("plugins: %v", cfg.Plugins)
+	if len(cfg.Plugins.Names) != 2 || cfg.Plugins.Names[0] != "ietf-system" || cfg.Plugins.Names[1] != "ietf-interfaces" {
+		t.Errorf("plugins: %v", cfg.Plugins.Names)
 	}
 }
 
@@ -53,7 +56,86 @@ func TestFromFlags_YangManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if cfg.YangManifest != "/etc/confd/plugins.yaml" {
-		t.Errorf("yang-manifest: %q", cfg.YangManifest)
+	if cfg.YANG.Manifest != "/etc/confd/plugins.yaml" {
+		t.Errorf("yang-manifest: %q", cfg.YANG.Manifest)
 	}
+}
+
+func TestLoadConfig_NonExistent(t *testing.T) {
+	cfg, err := LoadConfig("/nonexistent/confd.yaml")
+	if err != nil {
+		t.Fatalf("expected no error for non-existent file, got: %v", err)
+	}
+	if cfg.SSH.Bind != "0.0.0.0:830" {
+		t.Errorf("expected default bind, got %q", cfg.SSH.Bind)
+	}
+}
+
+func TestLoadConfig_YAML(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/confd.yaml"
+	yaml := `
+ssh:
+  bind: "127.0.0.1:9999"
+  password: "secret"
+adapter: mock
+yang:
+  manifest: "/etc/confd/manifest.yaml"
+plugins:
+  dir: "/usr/lib/confd/plugins"
+  names:
+    - ietf-system
+`
+	if err := writeToFile(path, yaml); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg.SSH.Bind != "127.0.0.1:9999" {
+		t.Errorf("bind: %q", cfg.SSH.Bind)
+	}
+	if cfg.SSH.Password != "secret" {
+		t.Errorf("password: %q", cfg.SSH.Password)
+	}
+	if cfg.Adapter != "mock" {
+		t.Errorf("adapter: %q", cfg.Adapter)
+	}
+	if cfg.YANG.Manifest != "/etc/confd/manifest.yaml" {
+		t.Errorf("manifest: %q", cfg.YANG.Manifest)
+	}
+	if cfg.Plugins.Dir != "/usr/lib/confd/plugins" {
+		t.Errorf("plugins.dir: %q", cfg.Plugins.Dir)
+	}
+	if len(cfg.Plugins.Names) != 1 || cfg.Plugins.Names[0] != "ietf-system" {
+		t.Errorf("plugins.names: %v", cfg.Plugins.Names)
+	}
+}
+
+func TestFromFlags_OverridesYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/confd.yaml"
+	yaml := `
+ssh:
+  bind: "127.0.0.1:9999"
+adapter: mock
+`
+	if err := writeToFile(path, yaml); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := FromFlags(Default(), []string{"--config=" + path, "--bind=0.0.0.0:8080", "--adapter=sysrepo"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg.SSH.Bind != "0.0.0.0:8080" {
+		t.Errorf("bind should be overridden by CLI: %q", cfg.SSH.Bind)
+	}
+	if cfg.Adapter != "sysrepo" {
+		t.Errorf("adapter should be overridden by CLI: %q", cfg.Adapter)
+	}
+}
+
+func writeToFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0644)
 }

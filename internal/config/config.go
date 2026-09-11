@@ -1,67 +1,125 @@
-// Package config parses confd's runtime configuration (YAML/CLI flags).
+// Package config parses confd's runtime configuration from a YAML file
+// and/or CLI flags. CLI flags override YAML values, which override
+// compiled-in defaults.
 package config
 
 import (
 	"fmt"
 	"os"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config is the runtime configuration of confd.
 type Config struct {
-	// SSHBind is the address to listen for NETCONF-over-SSH (default :830).
-	SSHBind string `yaml:"ssh_bind"`
-	// SSHHostKey is the path to the SSH host key (empty = ephemeral).
-	SSHHostKey string `yaml:"ssh_host_key"`
-	// SSHPassword enables password auth with this password (empty = noauth).
-	SSHPassword string `yaml:"ssh_password"`
+	SSH SSHConfig `yaml:"ssh"`
+
 	// Adapter selects the sysrepo backend: "mock" or "sysrepo".
 	Adapter string `yaml:"adapter"`
 	// SysrepoSocket is the path to the sysrepo socket (for the sysrepo adapter).
 	SysrepoSocket string `yaml:"sysrepo_socket"`
-	// PluginsDir is the directory containing libsrplg-*.so plugin
-	// artifacts (for the sysrepo adapter). Empty = no plugins.
-	PluginsDir string `yaml:"plugins_dir"`
-	// Plugins is an allowlist of plugin names to load. Empty = load all
-	// *.so files in PluginsDir.
-	Plugins []string `yaml:"plugins"`
-	// YangManifest is the path to a plugins.yaml manifest file. If empty,
+
+	// YANG provisioning.
+	YANG YANGConfig `yaml:"yang"`
+
+	// Plugins (sysrepo-plugind replacement).
+	Plugins PluginsConfig `yaml:"plugins"`
+}
+
+// SSHConfig configures the SSH listener.
+type SSHConfig struct {
+	Bind      string `yaml:"bind"`
+	HostKey   string `yaml:"host_key"`
+	Password  string `yaml:"password"`
+}
+
+// YANGConfig configures YANG module provisioning.
+type YANGConfig struct {
+	// Manifest is the path to a plugins.yaml manifest file. If empty,
 	// no YANG provisioning is done (modules must be installed manually).
-	YangManifest string `yaml:"yang_manifest"`
+	Manifest string `yaml:"manifest"`
+}
+
+// PluginsConfig configures the plugin host.
+type PluginsConfig struct {
+	// Dir is the directory containing libsrplg-*.so plugin artifacts.
+	Dir   string   `yaml:"dir"`
+	// Names is an allowlist of plugin names to load. Empty = load all in Dir.
+	Names []string `yaml:"names"`
 }
 
 // Default returns the default configuration.
 func Default() Config {
 	return Config{
-		SSHBind:   "0.0.0.0:830",
-		Adapter:   "sysrepo",
+		SSH: SSHConfig{
+			Bind: "0.0.0.0:830",
+		},
+		Adapter: "sysrepo",
 	}
 }
 
-// FromFlags applies CLI flag overrides to a base config.
+// DefaultConfigPath is the default path for the YAML config file.
+const DefaultConfigPath = "/etc/confd/confd.yaml"
+
+// LoadConfig loads a YAML config file and returns a Config. If the file
+// does not exist, returns Default() with no error.
+func LoadConfig(path string) (Config, error) {
+	cfg := Default()
+	if path == "" {
+		path = DefaultConfigPath
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return cfg, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("config: parse %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// FromFlags applies CLI flag overrides to a base config (from YAML).
 func FromFlags(base Config, args []string) (Config, error) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case strings.HasPrefix(a, "--config="):
+			path := strings.TrimPrefix(a, "--config=")
+			loaded, err := LoadConfig(path)
+			if err != nil {
+				return base, err
+			}
+			base = loaded
+		case a == "--config" && i+1 < len(args):
+			i++
+			loaded, err := LoadConfig(args[i])
+			if err != nil {
+				return base, err
+			}
+			base = loaded
 		case strings.HasPrefix(a, "--bind="):
-			base.SSHBind = strings.TrimPrefix(a, "--bind=")
+			base.SSH.Bind = strings.TrimPrefix(a, "--bind=")
 		case a == "--bind" && i+1 < len(args):
 			i++
-			base.SSHBind = args[i]
+			base.SSH.Bind = args[i]
 		case strings.HasPrefix(a, "--host-key="):
-			base.SSHHostKey = strings.TrimPrefix(a, "--host-key=")
+			base.SSH.HostKey = strings.TrimPrefix(a, "--host-key=")
 		case strings.HasPrefix(a, "--password="):
-			base.SSHPassword = strings.TrimPrefix(a, "--password=")
+			base.SSH.Password = strings.TrimPrefix(a, "--password=")
 		case strings.HasPrefix(a, "--adapter="):
 			base.Adapter = strings.TrimPrefix(a, "--adapter=")
 		case strings.HasPrefix(a, "--sysrepo-socket="):
 			base.SysrepoSocket = strings.TrimPrefix(a, "--sysrepo-socket=")
 		case strings.HasPrefix(a, "--plugins-dir="):
-			base.PluginsDir = strings.TrimPrefix(a, "--plugins-dir=")
+			base.Plugins.Dir = strings.TrimPrefix(a, "--plugins-dir=")
 		case strings.HasPrefix(a, "--plugin="):
-			base.Plugins = append(base.Plugins, strings.TrimPrefix(a, "--plugin="))
+			base.Plugins.Names = append(base.Plugins.Names, strings.TrimPrefix(a, "--plugin="))
 		case strings.HasPrefix(a, "--yang-manifest="):
-			base.YangManifest = strings.TrimPrefix(a, "--yang-manifest=")
+			base.YANG.Manifest = strings.TrimPrefix(a, "--yang-manifest=")
 		case a == "-h", a == "--help":
 			fmt.Fprintln(os.Stderr, usage())
 			os.Exit(0)
@@ -77,8 +135,10 @@ func usage() string {
 
 Usage:
   confd serve [flags]
+  confd schema-list [flags]
 
 Flags:
+  --config=<path>        Path to YAML config file (default: /etc/confd/confd.yaml)
   --bind=<addr>          SSH listen address (default 0.0.0.0:830)
   --host-key=<path>      SSH host key path (default: ephemeral)
   --password=<pw>        Enable SSH password auth

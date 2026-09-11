@@ -62,5 +62,7 @@ plugins: build-deps
 
 install: build
 	$(GO) build -tags sysrepo -o $(DESTDIR)/usr/bin/confd ./cmd/confd
+	mkdir -p $(DESTDIR)/etc/confd
+	cp confd.yaml $(DESTDIR)/etc/confd/confd.yaml
 	mkdir -p $(DESTDIR)$(PLUGINS_DIR)
 	cp plugins/*.so $(DESTDIR)$(PLUGINS_DIR)/ 2>/dev/null || true

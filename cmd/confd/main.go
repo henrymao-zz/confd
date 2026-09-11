@@ -41,6 +41,8 @@ func main() {
 }
 
 func runServe(args []string) error {
+	// Start with defaults, then load YAML config (if --config or
+	// /etc/confd/confd.yaml exists), then apply CLI flag overrides.
 	cfg, err := config.FromFlags(config.Default(), args)
 	if err != nil {
 		return err
@@ -60,8 +62,8 @@ func runServe(args []string) error {
 	// --- plugin host (replaces sysrepo-plugind) ---------------------------
 	var ph pluginhost.Host
 	var specs []pluginhost.Spec
-	if cfg.PluginsDir != "" {
-		specs, err = discoverPlugins(cfg.PluginsDir, cfg.Plugins)
+	if cfg.Plugins.Dir != "" {
+		specs, err = discoverPlugins(cfg.Plugins.Dir, cfg.Plugins.Names)
 		if err != nil {
 			return fmt.Errorf("discover plugins: %w", err)
 		}
@@ -79,14 +81,14 @@ func runServe(args []string) error {
 		Adapter:      adapter,
 		PluginHost:   ph,
 		PluginSpecs:  specs,
-		YangManifest: cfg.YangManifest,
+		YangManifest: cfg.YANG.Manifest,
 	})
 	if err != nil {
 		return err
 	}
 	defer srv.Close()
 
-	logger.Info("confd starting", "bind", cfg.SSHBind, "adapter", cfg.Adapter,
+	logger.Info("confd starting", "bind", cfg.SSH.Bind, "adapter", cfg.Adapter,
 		"modules", len(srv.Cache().Modules()), "plugins", len(specs))
 	for _, m := range srv.Cache().Modules() {
 		logger.Info("loaded module", "name", m.Name, "ns", m.Namespace, "rev", m.Revision)
@@ -98,9 +100,9 @@ func runServe(args []string) error {
 	}
 
 	return srv.ListenAndServe(ctx, transport.SSHConfig{
-		Bind:        cfg.SSHBind,
-		HostKeyPath: cfg.SSHHostKey,
-		Password:    cfg.SSHPassword,
+		Bind:        cfg.SSH.Bind,
+		HostKeyPath: cfg.SSH.HostKey,
+		Password:    cfg.SSH.Password,
 	})
 }
 
@@ -111,7 +113,7 @@ func runSchemaList(args []string) error {
 	}
 	srv, err := server.New(context.Background(), server.Config{
 		Adapter:      sysrepoadapter.NewMock(nil),
-		YangManifest: cfg.YangManifest,
+		YangManifest: cfg.YANG.Manifest,
 	})
 	if err != nil {
 		return err
