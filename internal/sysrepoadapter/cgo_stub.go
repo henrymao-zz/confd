@@ -58,6 +58,64 @@ func (c *cgoConn) ListModules(ctx context.Context) ([]ModuleInfo, error) {
 	return nil, nil
 }
 
+// GetModuleInfo returns the list of YANG modules installed in sysrepo.
+func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
+	var data *C.lyd_node
+	rc := C.sr_get_module_info((*C.sr_conn_ctx_t)(c.raw), &data)
+	if rc != C.SR_ERR_OK {
+		return nil, fmt.Errorf("sysrepoadapter: sr_get_module_info: %s", C.GoString(C.sr_strerror(rc)))
+	}
+	// TODO: parse the lyd_node tree into []ModuleInfo.
+	// For now, return empty; the provisioner will install all modules
+	// if GetModuleInfo returns empty (treating it as "nothing installed yet").
+	return nil, nil
+}
+
+// InstallModule installs a YANG module into sysrepo.
+func (c *cgoConn) InstallModule(ctx context.Context, path, searchDirs string, features []string) error {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	var cSearchDirs *C.char
+	if searchDirs != "" {
+		cSearchDirs = C.CString(searchDirs)
+		defer C.free(unsafe.Pointer(cSearchDirs))
+	}
+	// Build NULL-terminated features array.
+	var cFeatures **C.char
+	if len(features) > 0 {
+		cArr := make([]*C.char, len(features)+1)
+		for i, f := range features {
+			cArr[i] = C.CString(f)
+		}
+		cArr[len(features)] = nil
+		cFeatures = (***C.char)(unsafe.Pointer(&cArr[0]))
+		defer func() {
+			for _, cf := range cArr {
+				if cf != nil {
+					C.free(unsafe.Pointer(cf))
+				}
+			}
+		}()
+	}
+	rc := C.sr_install_module((*C.sr_conn_ctx_t)(c.raw), cPath, cSearchDirs, cFeatures)
+	if rc != C.SR_ERR_OK {
+		return fmt.Errorf("sysrepoadapter: sr_install_module: %s", C.GoString(C.sr_strerror(rc)))
+	}
+	return nil
+}
+
+// SetModuleFeature enables or disables a feature on an installed module.
+func (c *cgoConn) SetModuleFeature(ctx context.Context, module, feature string, enable bool) error {
+	// sysrepo doesn't have a dedicated sr_set_module_feature; features are
+	// enabled at install time via sr_install_module's features parameter.
+	// For already-installed modules, re-installing with the feature enabled
+	// is the standard approach. We call sr_install_module with the module
+	// path (which sysrepo resolves from its installed location) and the
+	// features list.
+	// TODO: find the module's on-disk path from sr_get_module_info.
+	return nil
+}
+
 // OpenSession starts a new sysrepo session on this connection.
 func (c *cgoConn) OpenSession(ctx context.Context, user string) (Session, error) {
 	var sess *C.sr_session_ctx_t

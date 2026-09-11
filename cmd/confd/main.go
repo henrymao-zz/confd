@@ -76,10 +76,11 @@ func runServe(args []string) error {
 	defer cancel()
 
 	srv, err := server.New(ctx, server.Config{
-		YANGPaths:   cfg.YANGPaths,
-		Adapter:     adapter,
+		YANGPaths:    cfg.YANGPaths,
+		Adapter:      adapter,
 		PluginHost:   ph,
-		PluginSpecs:  specs,
+		PluginSpecs:   specs,
+		YangManifest: cfg.YangManifest,
 	})
 	if err != nil {
 		return err

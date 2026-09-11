@@ -87,11 +87,24 @@ type Adapter interface {
 	Connect(ctx context.Context) (Conn, error)
 }
 
-// Conn is a long-lived connection to the datastore daemon.
+// Conn is a long-lived connection to the datastore.
 type Conn interface {
 	ListModules(ctx context.Context) ([]ModuleInfo, error)
 	OpenSession(ctx context.Context, user string) (Session, error)
 	Close() error
+
+	// GetModuleInfo returns the list of YANG modules installed in sysrepo.
+	GetModuleInfo(ctx context.Context) ([]ModuleInfo, error)
+
+	// InstallModule installs a YANG module into sysrepo.
+	// searchDirs is a colon-separated list of import search directories
+	// (or empty for no search dirs). features is a list of feature names
+	// to enable (or nil for no features).
+	InstallModule(ctx context.Context, path, searchDirs string, features []string) error
+
+	// SetModuleFeature enables or disables a feature on an already
+	// installed module.
+	SetModuleFeature(ctx context.Context, module, feature string, enable bool) error
 }
 
 // Session is a per-NETCONF-session datastore handle.

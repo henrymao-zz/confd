@@ -53,3 +53,13 @@ func TestFromFlags_Plugins(t *testing.T) {
 		t.Errorf("plugins: %v", cfg.Plugins)
 	}
 }
+
+func TestFromFlags_YangManifest(t *testing.T) {
+	cfg, err := FromFlags(Default(), []string{"--yang-manifest=/etc/confd/plugins.yaml"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg.YangManifest != "/etc/confd/plugins.yaml" {
+		t.Errorf("yang-manifest: %q", cfg.YangManifest)
+	}
+}

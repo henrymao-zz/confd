@@ -3,6 +3,8 @@ package sysrepoadapter
 import (
 	"context"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -56,6 +58,50 @@ func (c *mockConn) ListModules(ctx context.Context) ([]ModuleInfo, error) {
 	out := make([]ModuleInfo, len(c.mock.modules))
 	copy(out, c.mock.modules)
 	return out, nil
+}
+
+func (c *mockConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
+	c.mock.mu.Lock()
+	defer c.mock.mu.Unlock()
+	out := make([]ModuleInfo, len(c.mock.modules))
+	copy(out, c.mock.modules)
+	return out, nil
+}
+
+func (c *mockConn) InstallModule(ctx context.Context, path, searchDirs string, features []string) error {
+	c.mock.mu.Lock()
+	defer c.mock.mu.Unlock()
+	// Parse the .yang file to extract the module name.
+	name := extractModuleName(path)
+	if name == "" {
+		return fmt.Errorf("mock: could not extract module name from %s", path)
+	}
+	for _, m := range c.mock.modules {
+		if m.Name == name {
+			return nil // already installed
+		}
+	}
+	c.mock.modules = append(c.mock.modules, ModuleInfo{Name: name})
+	return nil
+}
+
+func (c *mockConn) SetModuleFeature(ctx context.Context, module, feature string, enable bool) error {
+	// Mock doesn't enforce features.
+	return nil
+}
+
+// extractModuleName reads a .yang file and extracts the module name.
+func extractModuleName(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	re := regexp.MustCompile(`(?m)^\s*module\s+([A-Za-z_][A-Za-z0-9_.\-]*)\s*\{`)
+	m := re.FindSubmatch(data)
+	if len(m) < 2 {
+		return ""
+	}
+	return string(m[1])
 }
 
 func (c *mockConn) OpenSession(ctx context.Context, user string) (Session, error) {

@@ -13,6 +13,7 @@ import (
 	"github.com/example/confd/internal/data"
 	"github.com/example/confd/internal/operations"
 	"github.com/example/confd/internal/pluginhost"
+	"github.com/example/confd/internal/yangprov"
 	"github.com/example/confd/internal/schema"
 	"github.com/example/confd/internal/sysrepoadapter"
 	"github.com/example/confd/internal/transport"
@@ -36,6 +37,9 @@ type Config struct {
 	PluginHost pluginhost.Host
 	// PluginSpecs is the list of plugins to load via PluginHost on startup.
 	PluginSpecs []pluginhost.Spec
+	// YangManifest is the path to a plugins.yaml manifest. If empty, no
+	// YANG provisioning is done (modules must be installed manually).
+	YangManifest string
 }
 
 // Server is a runnable NETCONF server.
@@ -64,6 +68,26 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	conn, err := adapter.Connect(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("server: connect adapter: %w", err)
+	}
+
+	// --- YANG provisioning (before plugin host start) --------------------
+	// If a YANG manifest is configured, provision YANG modules into sysrepo
+	// and load them into the goyang cache so capabilities match.
+	if cfg.YangManifest != "" {
+		specs, err := yangprov.LoadManifest(cfg.YangManifest)
+		if err != nil {
+			slog.Warn("server: failed to load YANG manifest, skipping provisioning", "error", err)
+		} else {
+			prov := yangprov.New(conn)
+			if err := prov.Provision(ctx, specs); err != nil {
+				slog.Warn("server: YANG provisioning failed", "error", err)
+			} else {
+				slog.Info("server: YANG modules provisioned", "plugins", len(specs))
+			}
+			if err := prov.LoadCache(cache, specs); err != nil {
+				slog.Warn("server: YANG cache load failed", "error", err)
+			}
+		}
 	}
 
 	// --- plugin host (replaces sysrepo-plugind) ---------------------------

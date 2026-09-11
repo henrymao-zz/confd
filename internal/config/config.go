@@ -27,6 +27,9 @@ type Config struct {
 	// Plugins is an allowlist of plugin names to load. Empty = load all
 	// *.so files in PluginsDir.
 	Plugins []string `yaml:"plugins"`
+	// YangManifest is the path to a plugins.yaml manifest file. If empty,
+	// confd auto-discovers YANG modules from the plugins directory.
+	YangManifest string `yaml:"yang_manifest"`
 }
 
 // Default returns the default configuration.
@@ -62,6 +65,8 @@ func FromFlags(base Config, args []string) (Config, error) {
 			base.PluginsDir = strings.TrimPrefix(a, "--plugins-dir=")
 		case strings.HasPrefix(a, "--plugin="):
 			base.Plugins = append(base.Plugins, strings.TrimPrefix(a, "--plugin="))
+		case strings.HasPrefix(a, "--yang-manifest="):
+			base.YangManifest = strings.TrimPrefix(a, "--yang-manifest=")
 		case a == "-h", a == "--help":
 			fmt.Fprintln(os.Stderr, usage())
 			os.Exit(0)
@@ -87,5 +92,6 @@ Flags:
   --sysrepo-socket=<path>   sysrepo socket (for --adapter=sysrepo)
   --plugins-dir=<dir>    Directory with libsrplg-*.so (for --adapter=sysrepo)
   --plugin=<name>        Allowlist a plugin (repeatable; empty = all)
+  --yang-manifest=<path> Path to plugins.yaml for YANG provisioning
 `
-}
+	}
