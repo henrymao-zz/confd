@@ -11,7 +11,6 @@ import (
 
 	"nemith.io/netconf"
 
-	"github.com/example/confd/internal/framing"
 	"github.com/example/confd/internal/nettrans"
 	"github.com/example/confd/internal/sysrepoadapter"
 )
@@ -155,40 +154,11 @@ type pipeAdapter struct {
 	tr *nettrans.PipeTransport
 }
 
-func (p *pipeAdapter) ReadMessage() ([]byte, error) {
-	r, err := p.tr.MsgReader()
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	return io.ReadAll(r)
-}
-
-func (p *pipeAdapter) WriteMessage(msg []byte) error {
-	w, err := p.tr.MsgWriter()
-	if err != nil {
-		return err
-	}
-	if _, err := w.Write(msg); err != nil {
-		_ = w.Close()
-		return err
-	}
-	return w.Close()
-}
-
-func (p *pipeAdapter) Framing() (*framing.Reader, *framing.Writer) {
-	return nil, nil
-}
-
 func (p *pipeAdapter) PeerUser() string { return "test" }
 
 func (p *pipeAdapter) Close() error { return p.tr.Close() }
 
 func (p *pipeAdapter) RawChannel() (io.Reader, io.Writer) {
-	// Use the underlying net.Pipe connections.
-	// The PipeTransport wraps a net.Pipe with nemith's Framer.
-	// We need to return the raw net.Conn.
-	// But PipeTransport hides the net.Conn. We'll add a method.
 	return p.tr.RawConn()
 }
 

@@ -671,14 +671,74 @@ is to absorb `sysrepo-plugind` into the same process.
 
 ---
 
-## 16. Summary
+## 16. Using nemith.io/netconf for NETCONF Protocol
+
+The hand-rolled NETCONF framing, hello, and message types have been
+replaced with the well-maintained Go library
+**[nemith.io/netconf](https://github.com/nemith/netconf)** (BSD-2-Clause,
+the maintained successor to Juniper/go-netconf).
+
+### 16.1 What was replaced
+
+| Old package | Replaced by | Status |
+|---|---|---|
+| `internal/framing` | `nemith.io/netconf/transport.Framer` | **deleted** |
+| `internal/hello` | `netconf.Hello` + `netconf.CapabilitySet` | **deleted** |
+| `internal/transport` (framing) | `transport.NewNemithTransport()` wraps SSH channel with nemith's `Framer` | **simplified** (SSH listener stays) |
+| `internal/rpc` (types) | `netconf.RPC` / `RPCError` / `ErrTag` / `ErrSeverity` | **bridge layer** (operations still use old `rpc.Dispatcher` internally) |
+
+### 16.2 What was kept
+
+| Package | Why kept |
+|---|---|
+| `internal/data` | No Go library encodes YANG data tree → NETCONF XML (ydk-go is archived + CGO) |
+| `internal/schema` | goyang schema parsing, unrelated to NETCONF protocol |
+| `internal/operations` | Handlers are confd-specific (call sysrepoadapter, use schema cache) |
+| `internal/rpc` | Bridge: operations use `rpc.Dispatcher`/`rpc.Context` internally; `operations.BuildHandlers()` wraps them as `nettrans.Handler` |
+| `internal/transport` | SSH listener + channel + subsystem handling stays; only framing was replaced |
+
+### 16.3 New package: `internal/nettrans`
+
+A thin (~200 LoC) adapter that fills the server-side gap in nemith (which
+ships only a client `Session`):
+
+- `SSHServerTransport` — wraps an `ssh.Channel` with nemith's `Framer`
+- `PipeTransport` — `net.Pipe`-based transport for tests
+- `ServerLoop` — server-side protocol loop: send `<hello>`, read peer
+  `<hello>`, negotiate base:1.1, loop on `<rpc>` → dispatch → `<rpc-reply>`
+- `Handler` type — `func(msgID string, innerXML []byte) (any, error)`
+
+### 16.4 Architecture after replacement
+
+```
+SSH client ─▶ transport.NewSSH() ─▶ Transport (SSH channel)
+                                       │
+                           transport.NewNemithTransport() wraps with
+                           nemith's transport.Framer
+                                       │
+                           nettrans.ServerLoop()
+                             ├── <hello> exchange (netconf.Hello)
+                             ├── base:1.1 negotiation (Framer.Upgrade)
+                             └── <rpc> loop → handlers → <rpc-reply>
+                                       │
+                           operations.BuildHandlers()
+                             └── bridge to rpc.Dispatcher (internal/rpc)
+                                   └── operations (get, get-config, ...)
+                                         ├── schema.Cache (goyang)
+                                         └── sysrepoadapter (Mock | CGo)
+```
+
+---
+
+## 17. Summary
 
 `confd` is a Go NETCONF server whose MVP focuses on **read-only retrieval of
 configuration and operational data** from sysrepo. It uses **goyang** as the
-schema layer (capabilities, `get-schema`, filter validation) and **sysrepo +
+schema layer (capabilities, `get-schema`, filter validation), **sysrepo +
 libyang** as the data layer (datastore access, XML serialization, error
-formatting). In single-daemon mode it also **replaces `sysrepo-plugind`** by
-hosting Telekom sysrepo-plugins via `dlopen` in the same process. The three
-layers (schema, data, plugins) are deliberately separated by interfaces so
-that each can be swapped, mocked, or replaced without touching the NETCONF
-protocol logic.
+formatting), and **nemith.io/netconf** for the NETCONF protocol layer
+(framing, hello, message types). In single-daemon mode it also **replaces
+`sysrepo-plugind`** by hosting Telekom sysrepo-plugins via `dlopen` in the
+same process. The layers (schema, data, plugins, protocol) are deliberately
+separated by interfaces so that each can be swapped, mocked, or replaced
+without touching the others.

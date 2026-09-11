@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 
-	"github.com/example/confd/internal/framing"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -49,9 +48,6 @@ func NewSSH(cfg SSHConfig) (Listener, error) {
 			return nil, nil
 		}
 	} else {
-		// No configured auth: accept any username with no credentials. This
-		// matches the "noauth" mode used by integration tests; production
-		// deployments should configure password/publickey auth.
 		sshCfg.PasswordCallback = func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
 			return nil, nil
 		}
@@ -72,7 +68,6 @@ func (l *sshListener) Accept() (Transport, error) {
 		}
 		sshConn, chans, reqs, err := ssh.NewServerConn(conn, l.cfg)
 		if err != nil {
-			// Keep accepting on next connection.
 			continue
 		}
 		go ssh.DiscardRequests(reqs)
@@ -94,33 +89,12 @@ type sshTransport struct {
 	conn   ssh.Conn
 	chans  <-chan ssh.NewChannel
 	user   string
-	r      *framing.Reader
-	w      *framing.Writer
 	ch     ssh.Channel
 	closed bool
 }
 
-func (t *sshTransport) ReadMessage() ([]byte, error) {
-	if err := t.ensure(); err != nil {
-		return nil, err
-	}
-	return t.r.ReadMessage()
-}
-
-func (t *sshTransport) WriteMessage(msg []byte) error {
-	if err := t.ensure(); err != nil {
-		return err
-	}
-	return t.w.WriteMessage(msg)
-}
-
-func (t *sshTransport) Framing() (*framing.Reader, *framing.Writer) {
-	_ = t.ensure()
-	return t.r, t.w
-}
-
 func (t *sshTransport) RawChannel() (io.Reader, io.Writer) {
-	_ = t.ensure()
+	t.ensure()
 	return t.ch, t.ch
 }
 
@@ -140,14 +114,14 @@ func (t *sshTransport) Close() error {
 	return nil
 }
 
-func (t *sshTransport) ensure() error {
-	if t.r != nil && t.w != nil {
-		return nil
+func (t *sshTransport) ensure() {
+	if t.ch != nil {
+		return
 	}
-	return t.acceptChannel()
+	t.acceptChannel()
 }
 
-func (t *sshTransport) acceptChannel() error {
+func (t *sshTransport) acceptChannel() {
 	for newChan := range t.chans {
 		if newChan.ChannelType() != "session" {
 			_ = newChan.Reject(ssh.UnknownChannelType, "only session channels")
@@ -157,17 +131,10 @@ func (t *sshTransport) acceptChannel() error {
 		if err != nil {
 			continue
 		}
-		// Handle channel-level requests (subsystem, exec, shell, env,
-		// pty-req, etc.) so the SSH client doesn't see "subsystem request
-		// failed". We accept "subsystem" (used by `ssh -s ... netconf`)
-		// and "exec" and reject everything else.
 		go t.handleChannelRequests(reqs, ch)
 		t.ch = ch
-		t.r = framing.NewReader(ch)
-		t.w = framing.NewWriter(ch)
-		return nil
+		return
 	}
-	return io.EOF
 }
 
 // handleChannelRequests processes per-channel SSH requests. The
@@ -177,13 +144,7 @@ func (t *sshTransport) handleChannelRequests(reqs <-chan *ssh.Request, ch ssh.Ch
 	for req := range reqs {
 		switch req.Type {
 		case "subsystem":
-			// Parse the subsystem name (4-byte length + string).
-			ok := true
-			if len(req.Payload) < 4 {
-				ok = false
-			}
-			if ok {
-				// Accept any subsystem name; we're a NETCONF server.
+			if len(req.Payload) >= 4 {
 				_ = req.Reply(true, nil)
 				continue
 			}
@@ -191,7 +152,6 @@ func (t *sshTransport) handleChannelRequests(reqs <-chan *ssh.Request, ch ssh.Ch
 		case "exec":
 			_ = req.Reply(true, nil)
 		default:
-			// Reject unknown requests (shell, pty-req, env, etc.).
 			_ = req.Reply(false, nil)
 		}
 	}

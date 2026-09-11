@@ -1,29 +1,13 @@
 package transport
 
 import (
-	"bytes"
-	"strings"
+	"io"
 	"testing"
+
+	"nemith.io/netconf/transport"
 
 	"golang.org/x/crypto/ssh"
 )
-
-func TestPipe_RoundTrip(t *testing.T) {
-	client, server := Pipe()
-	defer client.Close()
-	defer server.Close()
-
-	go func() {
-		_ = client.WriteMessage([]byte(`<rpc message-id="1"><get/></rpc>`))
-	}()
-	got, err := server.ReadMessage()
-	if err != nil {
-		t.Fatalf("server read: %v", err)
-	}
-	if !strings.Contains(string(got), "get") {
-		t.Errorf("server got: %q", got)
-	}
-}
 
 func TestSSH_ListenerHandshake(t *testing.T) {
 	ln, err := NewSSH(SSHConfig{Bind: "127.0.0.1:0", Password: "s3cret"})
@@ -40,9 +24,17 @@ func TestSSH_ListenerHandshake(t *testing.T) {
 			return
 		}
 		defer srv.Close()
-		// Read one message from the client.
-		_, err = srv.ReadMessage()
+		// Wrap the server's raw channel with nemith's framer.
+		nt := NewNemithTransport(srv)
+		r, err := nt.MsgReader()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer r.Close()
+		data, err := io.ReadAll(r)
 		done <- err
+		_ = data
 	}()
 
 	cliCfg := &ssh.ClientConfig{
@@ -61,14 +53,20 @@ func TestSSH_ListenerHandshake(t *testing.T) {
 	}
 	defer ch.Close()
 
-	// Wrap the SSH channel in the framing writer the same way the server does.
-	// We just write a base:1.0 framed message directly.
-	msg := []byte("<hello/>]]>]]>\n")
-	if _, err := ch.Write(msg); err != nil {
+	// Write a base:1.0 framed message using nemith's framer on the client side.
+	framer := transport.NewFramer(ch, ch)
+	w, err := framer.MsgWriter()
+	if err != nil {
+		t.Fatalf("msg writer: %v", err)
+	}
+	if _, err := w.Write([]byte("<hello/>")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
 	if err := <-done; err != nil {
 		t.Errorf("server read: %v", err)
 	}
-	_ = bytes.NewReader
 }
