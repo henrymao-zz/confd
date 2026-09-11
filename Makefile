@@ -38,15 +38,26 @@ run: build
 # nlohmann-json3-dev, pkg-config.
 build-deps:
 	@echo "Building libyang (v5.8.6) from submodule..."
-	cd deps/libyang && mkdir -p build && cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$$(nproc) && sudo make install
+	rm -rf /tmp/confd-build/libyang
+	mkdir -p /tmp/confd-build/libyang
+	cd /tmp/confd-build/libyang && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/deps/libyang && make -j$$(nproc) && sudo make install
 	@echo "Building sysrepo (v5.1.0) from submodule..."
-	cd deps/sysrepo && mkdir -p build && cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$$(nproc) && sudo make install
+	rm -rf /tmp/confd-build/sysrepo
+	mkdir -p /tmp/confd-build/sysrepo
+	cd /tmp/confd-build/sysrepo && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/deps/sysrepo && make -j$$(nproc) && sudo make install
 	@echo "Building libyang-cpp from submodule (patched for libyang 5.x)..."
-	cd deps/libyang-cpp && sed -i 's/libyang>=6.1.1/libyang>=5.0.0/' CMakeLists.txt && mkdir -p build && cd build && cmake .. && make -j$$(nproc) && sudo make install
+	sed -i 's/libyang>=6.1.1/libyang>=5.0.0/' deps/libyang-cpp/CMakeLists.txt
+	rm -rf /tmp/confd-build/libyang-cpp
+	mkdir -p /tmp/confd-build/libyang-cpp
+	cd /tmp/confd-build/libyang-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/deps/libyang-cpp && make -j$$(nproc) && sudo make install
 	@echo "Building sysrepo-cpp from submodule..."
-	cd deps/sysrepo-cpp && mkdir -p build && cd build && cmake .. && make -j$$(nproc) && sudo make install
+	rm -rf /tmp/confd-build/sysrepo-cpp
+	mkdir -p /tmp/confd-build/sysrepo-cpp
+	cd /tmp/confd-build/sysrepo-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/deps/sysrepo-cpp && make -j$$(nproc) && sudo make install
 	@echo "Building umgmt from submodule..."
-	cd deps/umgmt && mkdir -p build && cd build && cmake .. && make -j$$(nproc) && sudo make install
+	rm -rf /tmp/confd-build/umgmt
+	mkdir -p /tmp/confd-build/umgmt
+	cd /tmp/confd-build/umgmt && cmake -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/deps/umgmt && make -j$$(nproc) && sudo make install
 	@echo "Done. Run 'sudo ldconfig' to refresh the library cache."
 
 plugins: build-deps
