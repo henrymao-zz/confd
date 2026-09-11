@@ -58,7 +58,10 @@ build-deps:
 	@echo "Building umgmt from submodule..."
 	rm -rf /tmp/confd-build/umgmt /tmp/confd-build/umgmt-src
 	mkdir -p /tmp/confd-build/umgmt
-	rsync -a --exclude='build' $(CURDIR)/deps/umgmt/ /tmp/confd-build/umgmt-src/
+	# Copy umgmt source (skip nested submodule — it has mount permission issues)
+	rsync -a --exclude='build' --exclude='deps/uthash' $(CURDIR)/deps/umgmt/ /tmp/confd-build/umgmt-src/
+	# Clone uthash separately into /tmp
+	git clone --depth 1 https://github.com/troydhanson/uthash.git /tmp/confd-build/umgmt-src/deps/uthash 2>/dev/null || true
 	cd /tmp/confd-build/umgmt && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_POLICY_VERSION_MINIMUM=3.5 /tmp/confd-build/umgmt-src && make -j$$(nproc) && sudo make install
 	@echo "Done. Run 'sudo ldconfig' to refresh the library cache."
 
