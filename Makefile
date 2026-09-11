@@ -27,6 +27,10 @@ clean:
 run: build
 	./confd serve --bind=127.0.0.1:830 --password=confd --yang-path=./yang
 
+run-mock:
+	$(GO) build -o confd ./cmd/confd
+	./confd serve --bind=127.0.0.1:830 --password=confd --yang-path=./yang --adapter=mock
+
 # All dependencies are git submodules under src/.
 # Run 'git submodule update --init --recursive' before building.
 #
