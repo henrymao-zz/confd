@@ -25,21 +25,32 @@
 - **Single-daemon mode**: confd replaces `sysrepo-plugind` by loading
   `libsrplg-*.so` plugins via `dlopen` in the same process.
 
-### 1.2 Non-Goals (for MVP)
-- `<edit-config>` / `<copy-config>` / `<delete-config>` / `<commit>` —
-  deferred to phase 2 (they require full NACM + transaction plumbing).
-- Notifications / `<create-subscription>` — phase 3.
-- Call-home (RFC 8071), TLS transport (RFC 7589) — phase 4.
+### 1.2 Non-Goals
+- NACM (RFC 6536) — future phase.
+- Notifications / `<create-subscription>` — future phase.
+- Call-home (RFC 8071), TLS transport (RFC 7589) — future phase.
 - RESTCONF — separate project, out of scope here.
 - Reimplementing any plugin in Go.
 - Replacing libyang/libsysrepo with a pure-Go datastore.
 
-### 1.3 Phase 2+ Roadmap (sketch)
-1. `<edit-config>` + transactions (`<lock>`, `<commit>`, `<discard-changes>`).
-2. NACM (RFC 6536) enforcement on edit operations.
-3. `<notification>` replay via sysrepo notification store.
-4. `<validate>`, `<action>` (YANG 1.1 RPC/action) dispatch.
-5. TLS / call-home / clustered multi-tenant operation.
+### 1.3 Implemented operations
+
+| Operation | Status | sysrepo API |
+|---|---|---|
+| `<get>` | ✅ | `sr_get_items` (operational datastore) |
+| `<get-config>` | ✅ | `sr_get_items` (running/startup/candidate) |
+| `<get-schema>` | ✅ | goyang cache (RFC 6022) |
+| `<lock>` / `<unlock>` | ✅ | `sr_lock` / `sr_unlock` |
+| `<close-session>` / `<kill-session>` | ✅ | local |
+| `<edit-config>` | ✅ | `EditBatch` + `ApplyChanges` (merge/replace/none) |
+| `<copy-config>` | ✅ | `CopyConfig` (datastore→datastore) or `ReplaceConfig` (config→datastore) |
+| `<delete-config>` | ✅ | `ReplaceConfig(nil)` (startup only) |
+| `<commit>` | ✅ | `ApplyChanges` (candidate→running) |
+| `<discard-changes>` | ✅ | `DiscardChanges` |
+| `<validate>` | ✅ | `Validate` (no-op on mock) |
+| YANG provisioning | ✅ | `InstallModule` / `SetModuleFeature` / `LoadCache` |
+| NACM | 🚧 future | — |
+| Notifications | 🚧 future | — |
 
 ---
 
@@ -656,18 +667,18 @@ is to absorb `sysrepo-plugind` into the same process.
 
 ## 15. Milestones
 
-| Phase | Scope | Exit criteria |
+| Phase | Scope | Status |
 |---|---|---|
-| **M0** | skeleton: ssh transport + framing + hello | `nc` client can `<get/>` an empty datastore. |
-| **M1** | `get`, `get-config`, `get-schema`, `lock`, sessions | Passes Netopeer2's conformance tests for these ops. |
-| **M2** | filters (subtree + xpath), with-defaults, error map | Round-trips `ietf-system` / `ietf-interfaces` modules. |
-| **M3** | `edit-config`, `<commit>`, `<discard-changes>` | Netopeer2 `edit-config` tests pass against confd. |
-| **M4** | NACM, notifications, `<action>` | Full RFC 6241 base compliance; tagged 1.0. |
-| **P1** | cgo datastore adapter real (`sr_connect`, `sr_session_*`, `sr_get_items`, `sr_lock`) | confd reads live sysrepo running/operational data over SSH. |
-| **P2** | plugin host: `dlopen` + per-plugin session + init/cleanup + ordered shutdown | one Telekom plugin (`ietf-system`) loaded by confd; `<get>` returns real hostname/timezone. |
-| **P3** | multi-plugin, manifest, `--plugins-dir`/`--plugin`, YANG self-provisioning | all 7 Telekom plugins load; `systemctl start confd` is the only step. |
-| **P4** | (optional) absorb `sysrepo-notifd` behind `notifd` build tag | RFC 8639 configured subscriptions work without a separate process. |
-| **P5** | (optional) per-plugin fork+supervise hardening | a crashing plugin no longer takes down NETCONF. |
+| **M0** | skeleton: ssh transport + framing + hello | ✅ done |
+| **M1** | `get`, `get-config`, `get-schema`, `lock`, sessions | ✅ done |
+| **M2** | filters (subtree + xpath), with-defaults, error map | ✅ done |
+| **M3** | `edit-config`, `<commit>`, `<discard-changes>`, `<copy-config>`, `<delete-config>`, `<validate>` | ✅ done |
+| **M4** | NACM, notifications, `<action>` | 🚧 future |
+| **P1** | cgo datastore adapter real (`sr_connect`, `sr_session_*`, `sr_get_items`, `sr_lock`) | ✅ done (cgo stub) |
+| **P2** | plugin host: `dlopen` + per-plugin session + init/cleanup | ✅ done (behind `sysrepo` tag) |
+| **P3** | multi-plugin, manifest, `--plugins-dir`/`--plugin`, YANG provisioning | ✅ done |
+| **P4** | (optional) absorb `sysrepo-notifd` behind `notifd` build tag | 🚧 future |
+| **P5** | (optional) per-plugin fork+supervise hardening | 🚧 future |
 
 ---
 
@@ -742,3 +753,96 @@ formatting), and **nemith.io/netconf** for the NETCONF protocol layer
 same process. The layers (schema, data, plugins, protocol) are deliberately
 separated by interfaces so that each can be swapped, mocked, or replaced
 without touching the others.
+---
+
+## 18. NETCONF Edit Operations (`<edit-config>`, `<copy-config>`, `<delete-config>`, `<commit>`, `<discard-changes>`, `<validate>`)
+
+These are implemented in `internal/operations/` and backed by the
+`sysrepoadapter.Session` interface's edit methods:
+
+| Operation | Handler | sysrepo API |
+|---|---|---|
+| `<edit-config>` | `editConfigHandler` | `EditBatch` + `ApplyChanges` (merge/replace/none) |
+| `<copy-config>` | `copyConfigHandler` | `CopyConfig` (datastore→datastore) or `ReplaceConfig` (config→datastore) |
+| `<delete-config>` | `deleteConfigHandler` | `ReplaceConfig(nil)` (startup only) |
+| `<commit>` | `commitHandler` | `ApplyChanges` (candidate→running) |
+| `<discard-changes>` | `discardChangesHandler` | `DiscardChanges` |
+| `<validate>` | `validateHandler` | `Validate` |
+
+### Session lifecycle
+
+Each NETCONF session gets a `sysrepoadapter.Session` opened by
+`ServeTransport`. Edit operations use this per-session datastore session:
+`<lock><candidate/>` → `<edit-config><target><candidate/>` → `<validate>`
+→ `<commit/>` → `<unlock><candidate/>`. The session is closed when the
+SSH channel ends.
+
+### XML→DataNode decoder
+
+`<edit-config>`'s `<config>` payload is NETCONF XML that must be converted
+to a `DataNode` tree. `internal/data/decoder.go` implements `DecodeData()`
+as the inverse of the existing `Encoder.EncodeData()`.
+
+### Capabilities advertised
+
+The server advertises `:candidate:1.0` and `:validate:1.1` in its `<hello>`.
+
+---
+
+## 19. YANG Provisioning
+
+YANG modules are provisioned into sysrepo on startup by
+`internal/yangprov/provisioner.go`, eliminating the manual `sysrepoctl -i`
+step. A `Provisioner` calls `GetModuleInfo` to list installed modules,
+`InstallModule` for any that are missing, and `SetModuleFeature` to enable
+features. YANG directories are loaded from a `plugins.yaml` manifest
+(`--yang-manifest`), and the same directories are loaded into the goyang
+cache so that `<hello>` capabilities and `<get-schema>` match what's in
+sysrepo.
+
+### Startup ordering
+
+```
+confd startup
+  ├── 1. Read plugins.yaml (or auto-discover from --plugins-dir)
+  ├── 2. sr_connect() → sr_conn_ctx_t
+  ├── 3. Provisioner.Provision(): sr_get_module_info → sr_install_module
+  ├── 4. Provisioner.LoadCache(): goyang cache from manifest's YangDirs
+  ├── 5. Plugin host: dlopen → sr_plugin_init_cb
+  └── 6. Start NETCONF listener
+```
+
+### `plugins.yaml` manifest format
+
+```yaml
+plugins:
+  - name: ietf-system
+    yang_dir: /usr/lib/confd/yang/ietf-system
+    modules:
+      - iana-crypt-hash@2014-08-06.yang
+      - ietf-system@2014-08-06.yang
+    features:
+      ietf-system:
+        - timezone-name
+        - ntp
+        - authentication
+        - local-users
+```
+
+### `sysrepoadapter.Conn` interface
+
+Extended with three methods:
+- `GetModuleInfo` — list installed YANG modules
+- `InstallModule` — install a `.yang` file with features
+- `SetModuleFeature` — enable/disable a feature on an installed module
+
+The mock implementation tracks installed modules in memory; the cgo
+implementation uses `sr_get_module_info` / `sr_install_module`.
+
+### `--yang-manifest` flag
+
+The `--yang-manifest` flag replaces the old `--yang-path` flag. YANG
+modules are loaded exclusively from the manifest's `YangDir` values — there
+is no separate `--yang-path` fallback. If no manifest is set, no YANG
+modules are loaded (the goyang cache is empty and no capabilities are
+advertised beyond `:base:1.0` and `:base:1.1`).
