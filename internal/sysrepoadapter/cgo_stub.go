@@ -6,7 +6,8 @@
 package sysrepoadapter
 
 /*
-#cgo pkg-config: sysrepo
+#cgo pkg-config: sysrepo libyang
+#include <libyang/libyang.h>
 #include <sysrepo.h>
 #include <stdlib.h>
 */
@@ -60,14 +61,17 @@ func (c *cgoConn) ListModules(ctx context.Context) ([]ModuleInfo, error) {
 
 // GetModuleInfo returns the list of YANG modules installed in sysrepo.
 func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
-	var data *C.lyd_node
+	var data *C.sr_data_t
 	rc := C.sr_get_module_info((*C.sr_conn_ctx_t)(c.raw), &data)
 	if rc != C.SR_ERR_OK {
 		return nil, fmt.Errorf("sysrepoadapter: sr_get_module_info: %s", C.GoString(C.sr_strerror(rc)))
 	}
-	// TODO: parse the lyd_node tree into []ModuleInfo.
+	// TODO: parse the sr_data_t tree into []ModuleInfo.
 	// For now, return empty; the provisioner will install all modules
 	// if GetModuleInfo returns empty (treating it as "nothing installed yet").
+	if data != nil {
+		C.sr_release_data(data)
+	}
 	return nil, nil
 }
 
@@ -88,7 +92,7 @@ func (c *cgoConn) InstallModule(ctx context.Context, path, searchDirs string, fe
 			cArr[i] = C.CString(f)
 		}
 		cArr[len(features)] = nil
-		cFeatures = (***C.char)(unsafe.Pointer(&cArr[0]))
+		cFeatures = (**C.char)(unsafe.Pointer(&cArr[0]))
 		defer func() {
 			for _, cf := range cArr {
 				if cf != nil {
