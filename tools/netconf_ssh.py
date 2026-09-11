@@ -14,7 +14,7 @@ ch = client.get_transport().open_session()
 ch.exec_command("netconf")
 
 def base10_send(ch, msg):
-    ch.sendall(msg.encode() + b"\n]]>]]>\n")
+    ch.sendall(msg.encode() + b"]]>]]>")
 
 def base10_recv(ch):
     data = b""
@@ -29,8 +29,8 @@ def base11_send(ch, msg):
     payload = msg.encode()
     out = b""
     while len(payload) > 0:
-        n = min(len(payload), 65535)
-        out += f"\n#{n:04x}\n".encode() + payload[:n]
+        n = min(len(payload), 4294967295)
+        out += f"\n#{n}\n".encode() + payload[:n]
         payload = payload[n:]
     out += b"\n##\n"
     ch.sendall(out)
