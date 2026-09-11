@@ -1,0 +1,3 @@
+[submodule "sysrepo-plugins"]
+	path = sysrepo-plugins
+	url = https://github.com/telekom/sysrepo-plugins.git

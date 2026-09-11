@@ -2,7 +2,7 @@
 
 GO ?= go
 PLUGINS_DIR ?= /usr/lib/confd/plugins
-PLUGINS_SRC ?= ../sysrepo-plugins
+PLUGINS_SRC ?= ./sysrepo-plugins
 
 build:
 	$(GO) build ./...
