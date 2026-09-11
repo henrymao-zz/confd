@@ -2,7 +2,7 @@
 
 GO ?= go
 PLUGINS_DIR ?= /usr/lib/confd/plugins
-PLUGINS_SRC ?= ./sysrepo-plugins
+PLUGINS_SRC ?= ./src/sysrepo-plugins
 
 build:
 	$(GO) build ./...
@@ -28,11 +28,11 @@ clean:
 run: build
 	./bin/confd serve --bind=127.0.0.1:830 --password=confd --yang-path=./yang
 
-# All dependencies are git submodules under deps/ and sysrepo-plugins/.
+# All dependencies are git submodules under src/.
 # Run 'git submodule update --init --recursive' before building.
 #
 # Build C++ dependencies (libyang, sysrepo, libyang-cpp, sysrepo-cpp, umgmt)
-# from source. libyang-cpp is patched to accept libyang 5.x.
+# from source. libyang-cpp is pinned to a pre-v6 commit for libyang 5.x.
 # Requires: cmake, g++, libnl-3-dev, libnl-route-3-dev, libsystemd-dev,
 # libsdbus-c++-dev, libnftables-dev, libsensors-dev, libproc2-dev,
 # nlohmann-json3-dev, pkg-config.
@@ -40,26 +40,26 @@ build-deps:
 	@echo "Building libyang (v5.8.6) from submodule..."
 	rm -rf /tmp/confd-build/libyang
 	mkdir -p /tmp/confd-build/libyang
-	cd /tmp/confd-build/libyang && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/deps/libyang && make -j$$(nproc) && sudo make install
+	cd /tmp/confd-build/libyang && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/src/libyang && make -j$$(nproc) && sudo make install
 	@echo "Building sysrepo (v5.1.0) from submodule..."
 	rm -rf /tmp/confd-build/sysrepo
 	mkdir -p /tmp/confd-build/sysrepo
-	cd /tmp/confd-build/sysrepo && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNOTIFD_SETUP=OFF -DENABLE_SYSREPO_NOTIFD=OFF $(CURDIR)/deps/sysrepo && make -j$$(nproc) && sudo make install
+	cd /tmp/confd-build/sysrepo && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNOTIFD_SETUP=OFF -DENABLE_SYSREPO_NOTIFD=OFF $(CURDIR)/src/sysrepo && make -j$$(nproc) && sudo make install
 	@echo "Building libyang-cpp from submodule (pinned for libyang 5.x)..."
 	rm -rf /tmp/confd-build/libyang-cpp /tmp/confd-build/libyang-cpp-src
 	mkdir -p /tmp/confd-build/libyang-cpp
 	# Copy source to /tmp (mount doesn't allow in-place sed or builds)
-	rsync -a --exclude='sed*' --exclude='build' $(CURDIR)/deps/libyang-cpp/ /tmp/confd-build/libyang-cpp-src/
+	rsync -a --exclude='sed*' --exclude='build' $(CURDIR)/src/libyang-cpp/ /tmp/confd-build/libyang-cpp-src/
 	cd /tmp/confd-build/libyang-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF /tmp/confd-build/libyang-cpp-src && make -j$$(nproc) && sudo make install
 	@echo "Building sysrepo-cpp from submodule..."
 	rm -rf /tmp/confd-build/sysrepo-cpp
 	mkdir -p /tmp/confd-build/sysrepo-cpp
-	cd /tmp/confd-build/sysrepo-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF $(CURDIR)/deps/sysrepo-cpp && make -j$$(nproc) && sudo make install
+	cd /tmp/confd-build/sysrepo-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF $(CURDIR)/src/sysrepo-cpp && make -j$$(nproc) && sudo make install
 	@echo "Building umgmt from submodule..."
 	rm -rf /tmp/confd-build/umgmt /tmp/confd-build/umgmt-src
 	mkdir -p /tmp/confd-build/umgmt
 	# Copy umgmt source (skip nested submodule — it has mount permission issues)
-	rsync -a --exclude='build' --exclude='deps/uthash' $(CURDIR)/deps/umgmt/ /tmp/confd-build/umgmt-src/
+	rsync -a --exclude='build' --exclude='deps/uthash' $(CURDIR)/src/umgmt/ /tmp/confd-build/umgmt-src/
 	# Clone uthash separately into /tmp
 	git clone --depth 1 https://github.com/troydhanson/uthash.git /tmp/confd-build/umgmt-src/deps/uthash 2>/dev/null || true
 	cd /tmp/confd-build/umgmt && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_POLICY_VERSION_MINIMUM=3.5 /tmp/confd-build/umgmt-src && make -j$$(nproc) && sudo make install

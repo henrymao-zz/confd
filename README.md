@@ -91,12 +91,12 @@ Submodule layout:
 
 | Submodule | Path | Version | Purpose |
 |---|---|---|---|
-| [CESNET/libyang](https://github.com/CESNET/libyang) | `deps/libyang` | v5.8.6 | YANG data modeling (C library) |
-| [sysrepo/sysrepo](https://github.com/sysrepo/sysrepo) | `deps/sysrepo` | v5.1.0 | YANG-based datastore (C library) |
-| [CESNET/libyang-cpp](https://github.com/CESNET/libyang-cpp) | `deps/libyang-cpp` | master | C++ bindings for libyang |
-| [sysrepo/sysrepo-cpp](https://github.com/sysrepo/sysrepo-cpp) | `deps/sysrepo-cpp` | master | C++ bindings for sysrepo |
-| [sartura/umgmt](https://github.com/sartura/umgmt) | `deps/umgmt` | master | Userspace management library |
-| [telekom/sysrepo-plugins](https://github.com/telekom/sysrepo-plugins) | `sysrepo-plugins` | main | Telekom sysrepo plugins |
+| [CESNET/libyang](https://github.com/CESNET/libyang) | `src/libyang` | v5.8.6 | YANG data modeling (C library) |
+| [sysrepo/sysrepo](https://github.com/sysrepo/sysrepo) | `src/sysrepo` | v5.1.0 | YANG-based datastore (C library) |
+| [CESNET/libyang-cpp](https://github.com/CESNET/libyang-cpp) | `src/libyang-cpp` | pre-v6 | C++ bindings for libyang |
+| [sysrepo/sysrepo-cpp](https://github.com/sysrepo/sysrepo-cpp) | `src/sysrepo-cpp` | pre-v6 | C++ bindings for sysrepo |
+| [sartura/umgmt](https://github.com/sartura/umgmt) | `src/umgmt` | main | Userspace management library |
+| [telekom/sysrepo-plugins](https://github.com/telekom/sysrepo-plugins) | `src/sysrepo-plugins` | main | Telekom sysrepo plugins |
 
 #### 3. Build C++ dependencies (libyang, sysrepo, libyang-cpp, sysrepo-cpp, umgmt)
 
@@ -108,11 +108,11 @@ sudo ldconfig
 ```
 
 This builds (in order):
-- **libyang** v5.8.6 — from `deps/libyang`
-- **sysrepo** v5.1.0 — from `deps/sysrepo` (depends on libyang 5.x)
-- **libyang-cpp** — from `deps/libyang-cpp` (patched: lower version requirement from 6.1.1 to 5.0.0)
-- **sysrepo-cpp** — from `deps/sysrepo-cpp`
-- **umgmt** — from `deps/umgmt`
+- **libyang** v5.8.6 — from `src/libyang`
+- **sysrepo** v5.1.0 — from `src/sysrepo` (depends on libyang 5.x)
+- **libyang-cpp** — from `src/libyang-cpp` (pinned to pre-v6 commit for libyang 5.x compatibility)
+- **sysrepo-cpp** — from `src/sysrepo-cpp` (pinned to pre-v6 commit)
+- **umgmt** — from `src/umgmt`
 
 #### 4. Build the Telekom sysrepo-plugins
 
@@ -201,13 +201,13 @@ confd/
 │   ├── pluginhost/        # replaces sysrepo-plugind (dlopen, build tag)
 │   ├── data/              # DataNode -> NETCONF XML encoder
 │   └── server/            # wiring + ServeTransport / ListenAndServe
-├── deps/                  # git submodules: C/C++ dependencies
+├── src/                   # git submodules: C/C++ dependencies + plugins
 │   ├── libyang/           # CESNET/libyang v5.8.6
 │   ├── sysrepo/           # sysrepo/sysrepo v5.1.0
-│   ├── libyang-cpp/       # CESNET/libyang-cpp
-│   ├── sysrepo-cpp/       # sysrepo/sysrepo-cpp
-│   └── umgmt/             # sartura/umgmt
-├── sysrepo-plugins/       # git submodule: telekom/sysrepo-plugins
+│   ├── libyang-cpp/       # CESNET/libyang-cpp (pinned pre-v6)
+│   ├── sysrepo-cpp/       # sysrepo/sysrepo-cpp (pinned pre-v6)
+│   ├── umgmt/             # sartura/umgmt
+│   └── sysrepo-plugins/   # telekom/sysrepo-plugins
 ├── tools/                 # netconf_ssh.py — paramiko-based test client
 ├── yang/confd-test.yang   # in-tree YANG module used by tests
 ├── DESIGN.md              # full architecture & design document

@@ -1,18 +1,18 @@
 [submodule "sysrepo-plugins"]
-	path = sysrepo-plugins
+	path = src/sysrepo-plugins
 	url = https://github.com/telekom/sysrepo-plugins.git
-[submodule "deps/libyang"]
-	path = deps/libyang
+[submodule "src/libyang"]
+	path = src/libyang
 	url = https://github.com/CESNET/libyang.git
-[submodule "deps/sysrepo"]
-	path = deps/sysrepo
+[submodule "src/sysrepo"]
+	path = src/sysrepo
 	url = https://github.com/sysrepo/sysrepo.git
-[submodule "deps/libyang-cpp"]
-	path = deps/libyang-cpp
+[submodule "src/libyang-cpp"]
+	path = src/libyang-cpp
 	url = https://github.com/CESNET/libyang-cpp.git
-[submodule "deps/sysrepo-cpp"]
-	path = deps/sysrepo-cpp
+[submodule "src/sysrepo-cpp"]
+	path = src/sysrepo-cpp
 	url = https://github.com/sysrepo/sysrepo-cpp.git
-[submodule "deps/umgmt"]
-	path = deps/umgmt
+[submodule "src/umgmt"]
+	path = src/umgmt
 	url = https://github.com/sartura/umgmt.git
