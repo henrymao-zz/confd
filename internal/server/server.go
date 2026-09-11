@@ -56,11 +56,7 @@ type Server struct {
 // New builds a Server from cfg.
 func New(ctx context.Context, cfg Config) (*Server, error) {
 	cache := schema.New()
-	for _, dir := range cfg.YANGPaths {
-		if err := cache.LoadDirectory(dir); err != nil {
-			return nil, fmt.Errorf("server: load schema %s: %w", dir, err)
-		}
-	}
+
 	adapter := cfg.Adapter
 	if adapter == nil {
 		adapter = sysrepoadapter.NewMock(cfg.Modules)
@@ -72,7 +68,12 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 
 	// --- YANG provisioning (before plugin host start) --------------------
 	// If a YANG manifest is configured, provision YANG modules into sysrepo
-	// and load them into the goyang cache so capabilities match.
+	// and load them into the goyang cache so capabilities match. This
+	// replaces the need for --yang-path: the manifest's YangDir values
+	// are the single source of truth for YANG modules.
+	//
+	// If no manifest is set, fall back to --yang-path directories (the
+	// old behavior for tests and simple deployments).
 	if cfg.YangManifest != "" {
 		specs, err := yangprov.LoadManifest(cfg.YangManifest)
 		if err != nil {
@@ -86,6 +87,12 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 			}
 			if err := prov.LoadCache(cache, specs); err != nil {
 				slog.Warn("server: YANG cache load failed", "error", err)
+			}
+		}
+	} else {
+		for _, dir := range cfg.YANGPaths {
+			if err := cache.LoadDirectory(dir); err != nil {
+				return nil, fmt.Errorf("server: load schema %s: %w", dir, err)
 			}
 		}
 	}
