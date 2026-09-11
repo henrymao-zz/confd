@@ -76,10 +76,9 @@ func runServe(args []string) error {
 	defer cancel()
 
 	srv, err := server.New(ctx, server.Config{
-		YANGPaths:    cfg.YANGPaths,
 		Adapter:      adapter,
 		PluginHost:   ph,
-		PluginSpecs:   specs,
+		PluginSpecs:  specs,
 		YangManifest: cfg.YangManifest,
 	})
 	if err != nil {
@@ -111,8 +110,8 @@ func runSchemaList(args []string) error {
 		return err
 	}
 	srv, err := server.New(context.Background(), server.Config{
-		YANGPaths: cfg.YANGPaths,
-		Adapter:   sysrepoadapter.NewMock(nil),
+		Adapter:      sysrepoadapter.NewMock(nil),
+		YangManifest: cfg.YangManifest,
 	})
 	if err != nil {
 		return err

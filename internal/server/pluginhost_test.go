@@ -17,7 +17,7 @@ func TestServer_PluginHost_MockIntegration(t *testing.T) {
 	}
 
 	srv, err := New(context.Background(), Config{
-		YANGPaths:   []string{yangDir(t)},
+		YangManifest: writeManifest(t),
 		Adapter:     mock,
 		PluginHost:  ph,
 		PluginSpecs: specs,
@@ -47,7 +47,7 @@ func TestServer_PluginHost_NoSpecs(t *testing.T) {
 	mock := sysrepoadapter.NewMock(nil)
 	ph := pluginhost.NewMockHost()
 	srv, err := New(context.Background(), Config{
-		YANGPaths:  []string{yangDir(t)},
+		YangManifest: writeManifest(t),
 		Adapter:    mock,
 		PluginHost: ph,
 	})
@@ -63,7 +63,7 @@ func TestServer_PluginHost_NoSpecs(t *testing.T) {
 func TestServer_PluginHost_Nil(t *testing.T) {
 	mock := sysrepoadapter.NewMock(nil)
 	srv, err := New(context.Background(), Config{
-		YANGPaths: []string{yangDir(t)},
+		YangManifest: writeManifest(t),
 		Adapter:    mock,
 	})
 	if err != nil {

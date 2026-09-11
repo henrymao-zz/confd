@@ -3,9 +3,9 @@ package config
 import "testing"
 
 func TestFromFlags(t *testing.T) {
-	cfg, err := FromFlags(Default(), []string{"--bind=127.0.0.1:9000", "--password=secret", "--adapter=sysrepo", "--yang-path=/x", "--yang-path=/y"})
+	cfg, err := FromFlags(Default(), []string{"--bind=127.0.0.1:9000", "--password=secret", "--adapter=sysrepo", "--yang-manifest=/etc/confd/plugins.yaml"})
 	if err != nil {
-		t.Fatalf("from flags: %v", err)
+		t.Fatalf("err: %v", err)
 	}
 	if cfg.SSHBind != "127.0.0.1:9000" {
 		t.Errorf("bind: %q", cfg.SSHBind)
@@ -16,14 +16,8 @@ func TestFromFlags(t *testing.T) {
 	if cfg.Adapter != "sysrepo" {
 		t.Errorf("adapter: %q", cfg.Adapter)
 	}
-	if len(cfg.YANGPaths) < 2 || cfg.YANGPaths[len(cfg.YANGPaths)-2] != "/x" || cfg.YANGPaths[len(cfg.YANGPaths)-1] != "/y" {
-		t.Errorf("yang paths: %v", cfg.YANGPaths)
-	}
-}
-
-func TestFromFlags_Unknown(t *testing.T) {
-	if _, err := FromFlags(Default(), []string{"--nonsense"}); err == nil {
-		t.Error("expected error for unknown flag")
+	if cfg.YangManifest != "/etc/confd/plugins.yaml" {
+		t.Errorf("yang-manifest: %q", cfg.YangManifest)
 	}
 }
 

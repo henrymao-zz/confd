@@ -170,20 +170,20 @@ make clean           # remove build artifacts
 
 ```
 go build -o /tmp/confd ./cmd/confd
-/tmp/confd serve --bind=127.0.0.1:830 --password=confd --yang-path=./yang
+/tmp/confd serve --bind=127.0.0.1:830 --password=confd --yang-manifest=/etc/confd/plugins.yaml
 ```
 
 With plugins (single-daemon mode, requires `-tags sysrepo`):
 ```
 /tmp/confd serve --bind=0.0.0.0:830 --password=confd --adapter=sysrepo \
-  --yang-path=/usr/share/yang/modules \
+  --yang-manifest=/etc/confd/plugins.yaml \
   --plugins-dir=/usr/lib/confd/plugins \
   --plugin=ietf-system --plugin=ietf-interfaces
 ```
 
 Subcommands:
 - `confd serve` — start the NETCONF listener.
-- `confd schema-list --yang-path=<dir>` — list loaded YANG modules (debug aid).
+- `confd schema-list --yang-manifest=<path>` — list loaded YANG modules (debug aid).
 
 ## Try it
 

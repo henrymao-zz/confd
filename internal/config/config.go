@@ -15,8 +15,6 @@ type Config struct {
 	SSHHostKey string `yaml:"ssh_host_key"`
 	// SSHPassword enables password auth with this password (empty = noauth).
 	SSHPassword string `yaml:"ssh_password"`
-	// YANGPaths are directories to load YANG modules from.
-	YANGPaths []string `yaml:"yang_paths"`
 	// Adapter selects the sysrepo backend: "mock" or "sysrepo".
 	Adapter string `yaml:"adapter"`
 	// SysrepoSocket is the path to the sysrepo socket (for the sysrepo adapter).
@@ -28,16 +26,15 @@ type Config struct {
 	// *.so files in PluginsDir.
 	Plugins []string `yaml:"plugins"`
 	// YangManifest is the path to a plugins.yaml manifest file. If empty,
-	// confd auto-discovers YANG modules from the plugins directory.
+	// no YANG provisioning is done (modules must be installed manually).
 	YangManifest string `yaml:"yang_manifest"`
 }
 
 // Default returns the default configuration.
 func Default() Config {
 	return Config{
-		SSHBind:    "0.0.0.0:830",
-		YANGPaths:  []string{"/etc/confd/yang", "/usr/share/yang/modules"},
-		Adapter:    "sysrepo",
+		SSHBind:   "0.0.0.0:830",
+		Adapter:   "sysrepo",
 	}
 }
 
@@ -55,8 +52,6 @@ func FromFlags(base Config, args []string) (Config, error) {
 			base.SSHHostKey = strings.TrimPrefix(a, "--host-key=")
 		case strings.HasPrefix(a, "--password="):
 			base.SSHPassword = strings.TrimPrefix(a, "--password=")
-		case strings.HasPrefix(a, "--yang-path="):
-			base.YANGPaths = append(base.YANGPaths, strings.TrimPrefix(a, "--yang-path="))
 		case strings.HasPrefix(a, "--adapter="):
 			base.Adapter = strings.TrimPrefix(a, "--adapter=")
 		case strings.HasPrefix(a, "--sysrepo-socket="):
@@ -87,11 +82,10 @@ Flags:
   --bind=<addr>          SSH listen address (default 0.0.0.0:830)
   --host-key=<path>      SSH host key path (default: ephemeral)
   --password=<pw>        Enable SSH password auth
-  --yang-path=<dir>      Add a YANG search directory (repeatable)
-  --adapter=<mock|sysrepo>  Select backend (default: mock)
+  --adapter=<mock|sysrepo>  Select backend (default: sysrepo)
   --sysrepo-socket=<path>   sysrepo socket (for --adapter=sysrepo)
   --plugins-dir=<dir>    Directory with libsrplg-*.so (for --adapter=sysrepo)
   --plugin=<name>        Allowlist a plugin (repeatable; empty = all)
   --yang-manifest=<path> Path to plugins.yaml for YANG provisioning
 `
-	}
+}
