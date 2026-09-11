@@ -49,14 +49,93 @@ transport (SSH) ─▶ framing ─▶ hello ─▶ rpc dispatch ─▶ operation
 
 ## Build
 
+### Quick start (pure Go, no dependencies)
+
 ```
 make build           # pure Go (uses the Mock adapter, NoopHost)
-make sysrepo         # cgo build against libsysrepo (needs sysrepo headers + dlopen)
 make test            # unit + integration tests
 make test-race       # with the race detector
 make vet
-make plugins         # cmake build of telekom/sysrepo-plugins -> build/plugins/*.so
-make install         # go install confd + cp plugins to $(DESTDIR)/usr/lib/confd/plugins
+```
+
+No system dependencies needed — the `Mock` adapter and `NoopHost` provide in-memory implementations for all tests.
+
+### Full build with sysrepo backend + plugins (Ubuntu 26.04)
+
+#### 1. Install system dependencies
+
+```
+sudo apt install -y \
+  golang-go \
+  pkg-config \
+  cmake g++ \
+  libsysrepo-dev libyang-dev \
+  libnl-3-dev libnl-route-3-dev libnl-genl-3-dev libnl-nf-3-dev \
+  libsystemd-dev \
+  libsdbus-c++-dev \
+  libnftables-dev \
+  libsensors-dev \
+  libproc2-dev \
+  nlohmann-json3-dev
+```
+
+#### 2. Initialize the git submodule
+
+```
+git submodule update --init
+```
+
+#### 3. Build C++ dependencies (libyang-cpp, sysrepo-cpp, umgmt)
+
+These libraries are not available as Ubuntu packages and must be built from source:
+
+```
+make build-deps
+sudo ldconfig
+```
+
+This clones and builds:
+- [libyang-cpp](https://github.com/CESNET/libyang-cpp) — C++ bindings for libyang
+- [sysrepo-cpp](https://github.com/sysrepo/sysrepo-cpp) — C++ bindings for sysrepo
+- [umgmt](https://github.com/sartura/umgmt) — userspace management library
+
+#### 4. Build the Telekom sysrepo-plugins
+
+```
+make plugins
+```
+
+This runs cmake on `./sysrepo-plugins` (with `-DSYSTEMD_IFINDEX=1`) and copies `libsrplg-*.so` files to `/usr/lib/confd/plugins/`. The following plugins are built:
+
+| Plugin | YANG module | Description |
+|---|---|---|
+| `ietf-system` | `ietf-system` | System hostname, timezone, DNS, NTP, auth (RFC 7317) |
+| `ietf-interfaces` | `ietf-interfaces` | Network interface management (RFC 7223) |
+| `ietf-routing` | `ietf-routing` | Routing management (RFC 8022) |
+| `ietf-hardware` | `ietf-hardware` | Hardware management (RFC 8348) |
+| `ietf-access-control-list` | `ietf-access-control-list` | ACLs (RFC 8519) |
+| `ieee802-dot1q-bridge` | `ieee802-dot1q-bridge` | 802.1Q bridge config (IEEE 802.1Q-2018) |
+| `os-metrics` | `os-metrics` | OS-level metrics (Debian) |
+
+#### 5. Build confd with sysrepo support
+
+```
+make sysrepo         # cgo build against libsysrepo
+```
+
+### All Makefile targets
+
+```
+make build           # pure Go (uses the Mock adapter, NoopHost)
+make sysrepo         # cgo build against libsysrepo (needs sysrepo headers + dlopen)
+make build-deps      # build libyang-cpp, sysrepo-cpp, umgmt from source
+make plugins         # build telekom/sysrepo-plugins -> /usr/lib/confd/plugins/*.so
+make test            # unit + integration tests
+make test-race       # with the race detector
+make vet             # go vet
+make cover           # test coverage report
+make install         # install confd binary + plugin .so files
+make clean           # remove build artifacts
 ```
 
 ## Run
@@ -107,6 +186,8 @@ confd/
 │   ├── pluginhost/        # replaces sysrepo-plugind (dlopen, build tag)
 │   ├── data/              # DataNode -> NETCONF XML encoder
 │   └── server/            # wiring + ServeTransport / ListenAndServe
+├── sysrepo-plugins/       # git submodule: telekom/sysrepo-plugins
+├── tools/                 # netconf_ssh.py — paramiko-based test client
 ├── yang/confd-test.yang   # in-tree YANG module used by tests
 ├── DESIGN.md              # full architecture & design document
 ├── Makefile
@@ -115,10 +196,12 @@ confd/
 
 ## Wiring the real sysrepo backend + plugins
 
-1. Install sysrepo + libyang headers (`apt install libsysrepo-dev libyang-dev`).
-2. Build the Telekom plugins: `git clone https://github.com/telekom/sysrepo-plugins && cd sysrepo-plugins && mkdir build && cd build && cmake .. && make -j`.
-3. `make sysrepo` (or `go build -tags sysrepo`).
-4. Run `confd serve --adapter=sysrepo --plugins-dir=/usr/lib/confd/plugins`.
+1. Install system dependencies (see [Build](#build) above).
+2. `git submodule update --init` — fetch the Telekom sysrepo-plugins source.
+3. `make build-deps && sudo ldconfig` — build libyang-cpp, sysrepo-cpp, umgmt.
+4. `make plugins` — build the plugin `.so` files and install to `/usr/lib/confd/plugins/`.
+5. `make sysrepo` — build confd with cgo against libsysrepo.
+6. Run `confd serve --adapter=sysrepo --plugins-dir=/usr/lib/confd/plugins`.
 
 The `CGo` adapter uses `sr_connect`, `sr_session_start`, `sr_session_switch_ds`, `sr_get_items`, `sr_lock`/`sr_unlock`, and `sr_disconnect`. The `CGoHost` uses `dlopen` + `sr_plugin_init_cb` / `sr_plugin_cleanup_cb`. Both share one `sr_conn_ctx_t` with independent `sr_session_ctx_t`s.
 
@@ -126,4 +209,8 @@ The `CGo` adapter uses `sr_connect`, `sr_session_start`, `sr_session_switch_ds`,
 
 All 12 packages pass `go test -race` without any sysrepo or cgo installed — the `Mock` adapter and `MockHost` provide in-memory implementations for tests. A real SSH end-to-end test (`TestServer_SSHEndToEnd`) dials the server over loopback and exercises the full `<hello>` + `<get-config>` + `<get>` flow with `golang.org/x/crypto/ssh`.
 
-Verified end-to-end in a multipass VM (Ubuntu 22.04) with a Python NETCONF client: `<hello>`, `<get-config>`, `<get>`, `<get-schema>`, `<edit-config>` (rpc-error), and `<close-session>` all work correctly over SSH with base:1.1 chunked framing.
+Verified end-to-end in a multipass VM (Ubuntu 26.04 LTS) with a Python NETCONF client: `<hello>`, `<get-config>`, `<get>`, `<get-schema>`, `<edit-config>` (rpc-error), and `<close-session>` all work correctly over SSH with base:1.1 chunked framing. Use `tools/netconf_ssh.py` to reproduce:
+
+```
+python3 tools/netconf_ssh.py <vm-ip> 1830 confd
+```
