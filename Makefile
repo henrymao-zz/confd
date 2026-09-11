@@ -1,4 +1,4 @@
-.PHONY: configure build test test-race vet cover clean run run-mock install
+.PHONY: configure build test clean run install
 
 GO ?= go
 PLUGINS_DIR ?= /usr/lib/confd/plugins
@@ -40,27 +40,14 @@ build: configure
 test:
 	$(GO) test ./...
 
-test-race:
-	$(GO) test -race ./...
-
-vet:
-	$(GO) vet ./...
-
-cover:
-	$(GO) test -coverprofile=coverage.out ./... && $(GO) tool cover -func=coverage.out
-
 clean:
 	rm -f coverage.out confd
 
 run: build
 	./confd serve --bind=127.0.0.1:830 --password=confd
 
-run-mock:
-	$(GO) build -o confd ./cmd/confd
-	./confd serve --bind=127.0.0.1:830 --password=confd --adapter=mock
-
 install: build
-	$(GO) build -tags sysrepo -o $(DESTDIR)/usr/bin/confd ./cmd/confd
+	install -D confd $(DESTDIR)/usr/bin/confd
 	mkdir -p $(DESTDIR)/etc/confd
 	cp confd.yaml $(DESTDIR)/etc/confd/confd.yaml
 	mkdir -p $(DESTDIR)$(PLUGINS_DIR)

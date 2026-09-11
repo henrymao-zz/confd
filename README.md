@@ -67,8 +67,6 @@ CLI mode (confd):
 
 ```
 make test            # run tests with mock adapter (no cgo/sysrepo needed)
-make test-race       # tests with the race detector
-make vet
 ```
 
 ### Full build with sysrepo backend + plugins (Ubuntu 26.04)
@@ -92,8 +90,7 @@ git submodule update --init --recursive
 #### 3. Build C++ dependencies + plugins
 
 ```
-make build-deps && sudo ldconfig
-make plugins
+make configure
 ```
 
 #### 4. Build confd
@@ -105,12 +102,10 @@ make build           # builds with -tags sysrepo (cgo against libsysrepo)
 ### All Makefile targets
 
 ```
-make build           # build confd with sysrepo cgo backend (default)
+make configure       # build all C++ deps + plugins from submodules
+make build           # build confd with sysrepo cgo backend (depends on configure)
 make test            # run tests with mock adapter (no cgo needed)
-make test-race       # tests with the race detector
-make vet             # go vet
-make build-deps      # build libyang, sysrepo, libyang-cpp, sysrepo-cpp, umgmt from submodules
-make plugins         # build telekom/sysrepo-plugins -> /usr/lib/confd/plugins/*.so
+make run             # build + start the server
 make install         # install confd binary + confd.yaml + plugin .so files
 make clean           # remove build artifacts
 ```
