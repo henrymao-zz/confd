@@ -25,7 +25,7 @@ clean:
 	rm -f coverage.out /tmp/confd
 
 run: build
-	./confd serve --bind=127.0.0.1:830 --password=confd --adapter=mock
+	./confd serve --bind=127.0.0.1:830 --password=confd
 
 run-mock:
 	$(GO) build -o confd ./cmd/confd
