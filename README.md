@@ -49,16 +49,15 @@ transport (SSH) ─▶ framing ─▶ hello ─▶ rpc dispatch ─▶ operation
 
 ## Build
 
-### Quick start (pure Go, no dependencies)
+### Quick start (tests only, no dependencies)
 
 ```
-make build           # pure Go (uses the Mock adapter, NoopHost)
-make test            # unit + integration tests
-make test-race       # with the race detector
+make test            # run tests with mock adapter (no cgo/sysrepo needed)
+make test-race       # tests with the race detector
 make vet
 ```
 
-No system dependencies needed — the `Mock` adapter and `NoopHost` provide in-memory implementations for all tests.
+No system dependencies needed — the `Mock` adapter and `MockHost` provide in-memory implementations for all tests.
 
 ### Full build with sysrepo backend + plugins (Ubuntu 26.04)
 
@@ -132,22 +131,24 @@ This runs cmake on `./sysrepo-plugins` (with `-DSYSTEMD_IFINDEX=1`) and copies `
 | `ieee802-dot1q-bridge` | `ieee802-dot1q-bridge` | 802.1Q bridge config (IEEE 802.1Q-2018) |
 | `os-metrics` | `os-metrics` | OS-level metrics (Debian) |
 
-#### 5. Build confd with sysrepo support
+#### 5. Build confd
 
 ```
-make sysrepo         # cgo build against libsysrepo
+make build           # builds with -tags sysrepo (cgo against libsysrepo)
 ```
 
 ### All Makefile targets
 
 ```
-make build           # pure Go (uses the Mock adapter, NoopHost)
-make sysrepo         # cgo build against libsysrepo (needs sysrepo headers + dlopen)
-make build-deps      # build libyang-cpp, sysrepo-cpp, umgmt from source
-make plugins         # build telekom/sysrepo-plugins -> /usr/lib/confd/plugins/*.so
-make test            # unit + integration tests
-make test-race       # with the race detector
+make build           # build confd with sysrepo cgo backend (default)
+make test            # run tests with mock adapter (no cgo needed)
+make test-race       # tests with the race detector
 make vet             # go vet
+make build-deps      # build libyang, sysrepo, libyang-cpp, sysrepo-cpp, umgmt from submodules
+make plugins         # build telekom/sysrepo-plugins -> /usr/lib/confd/plugins/*.so
+make install         # install confd binary + plugin .so files
+make clean           # remove build artifacts
+```
 make cover           # test coverage report
 make install         # install confd binary + plugin .so files
 make clean           # remove build artifacts
@@ -221,7 +222,7 @@ confd/
 2. `git submodule update --init` — fetch the Telekom sysrepo-plugins source.
 3. `make build-deps && sudo ldconfig` — build libyang-cpp, sysrepo-cpp, umgmt.
 4. `make plugins` — build the plugin `.so` files and install to `/usr/lib/confd/plugins/`.
-5. `make sysrepo` — build confd with cgo against libsysrepo.
+5. `make build` — build confd with cgo against libsysrepo.
 6. Run `confd serve --adapter=sysrepo --plugins-dir=/usr/lib/confd/plugins`.
 
 The `CGo` adapter uses `sr_connect`, `sr_session_start`, `sr_session_switch_ds`, `sr_get_items`, `sr_lock`/`sr_unlock`, and `sr_disconnect`. The `CGoHost` uses `dlopen` + `sr_plugin_init_cb` / `sr_plugin_cleanup_cb`. Both share one `sr_conn_ctx_t` with independent `sr_session_ctx_t`s.

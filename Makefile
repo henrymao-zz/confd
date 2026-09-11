@@ -1,14 +1,14 @@
-.PHONY: build test test-race vet cover clean sysrepo plugins install build-deps
+.PHONY: build test test-race vet cover clean plugins install build-deps
 
 GO ?= go
 PLUGINS_DIR ?= /usr/lib/confd/plugins
 
+# Build confd with the real sysrepo cgo backend (default).
+# The `sysrepo` build tag enables cgo bindings to libsysrepo.
 build:
-	$(GO) build ./...
-
-sysrepo:
 	$(GO) build -tags sysrepo ./...
 
+# Run tests with the mock adapter (no cgo, no sysrepo needed).
 test:
 	$(GO) test ./...
 
@@ -57,6 +57,6 @@ plugins: build-deps
 	@echo "Done. Plugins installed to $(PLUGINS_DIR)"
 
 install: build
-	$(GO) build -o $(DESTDIR)/usr/bin/confd ./cmd/confd
+	$(GO) build -tags sysrepo -o $(DESTDIR)/usr/bin/confd ./cmd/confd
 	mkdir -p $(DESTDIR)$(PLUGINS_DIR)
 	cp plugins/*.so $(DESTDIR)$(PLUGINS_DIR)/ 2>/dev/null || true

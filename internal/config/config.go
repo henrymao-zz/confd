@@ -34,7 +34,7 @@ func Default() Config {
 	return Config{
 		SSHBind:    "0.0.0.0:830",
 		YANGPaths:  []string{"/etc/confd/yang", "/usr/share/yang/modules"},
-		Adapter:    "mock",
+		Adapter:    "sysrepo",
 	}
 }
 
