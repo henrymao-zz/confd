@@ -56,9 +56,10 @@ build-deps:
 	mkdir -p /tmp/confd-build/sysrepo-cpp
 	cd /tmp/confd-build/sysrepo-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF $(CURDIR)/deps/sysrepo-cpp && make -j$$(nproc) && sudo make install
 	@echo "Building umgmt from submodule..."
-	rm -rf /tmp/confd-build/umgmt
+	rm -rf /tmp/confd-build/umgmt /tmp/confd-build/umgmt-src
 	mkdir -p /tmp/confd-build/umgmt
-	cd /tmp/confd-build/umgmt && cmake -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/deps/umgmt && make -j$$(nproc) && sudo make install
+	rsync -a --exclude='build' $(CURDIR)/deps/umgmt/ /tmp/confd-build/umgmt-src/
+	cd /tmp/confd-build/umgmt && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_POLICY_VERSION_MINIMUM=3.5 /tmp/confd-build/umgmt-src && make -j$$(nproc) && sudo make install
 	@echo "Done. Run 'sudo ldconfig' to refresh the library cache."
 
 plugins: build-deps
