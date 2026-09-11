@@ -25,7 +25,7 @@ clean:
 	rm -f coverage.out /tmp/confd
 
 run: build
-	./bin/confd serve --bind=127.0.0.1:830 --password=confd --yang-path=./yang
+	./confd serve --bind=127.0.0.1:830 --password=confd --yang-path=./yang
 
 # All dependencies are git submodules under src/.
 # Run 'git submodule update --init --recursive' before building.
