@@ -50,11 +50,11 @@ build-deps:
 	mkdir -p /tmp/confd-build/libyang-cpp
 	# Copy source to /tmp (mount doesn't allow in-place sed or builds)
 	rsync -a --exclude='sed*' --exclude='build' $(CURDIR)/deps/libyang-cpp/ /tmp/confd-build/libyang-cpp-src/
-	cd /tmp/confd-build/libyang-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local /tmp/confd-build/libyang-cpp-src && make -j$$(nproc) && sudo make install
+	cd /tmp/confd-build/libyang-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF /tmp/confd-build/libyang-cpp-src && make -j$$(nproc) && sudo make install
 	@echo "Building sysrepo-cpp from submodule..."
 	rm -rf /tmp/confd-build/sysrepo-cpp
 	mkdir -p /tmp/confd-build/sysrepo-cpp
-	cd /tmp/confd-build/sysrepo-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local $(CURDIR)/deps/sysrepo-cpp && make -j$$(nproc) && sudo make install
+	cd /tmp/confd-build/sysrepo-cpp && cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=OFF $(CURDIR)/deps/sysrepo-cpp && make -j$$(nproc) && sudo make install
 	@echo "Building umgmt from submodule..."
 	rm -rf /tmp/confd-build/umgmt
 	mkdir -p /tmp/confd-build/umgmt
