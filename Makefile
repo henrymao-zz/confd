@@ -6,7 +6,7 @@ PLUGINS_DIR ?= /usr/lib/confd/plugins
 # Build confd with the real sysrepo cgo backend (default).
 # The `sysrepo` build tag enables cgo bindings to libsysrepo.
 build:
-	$(GO) build -tags sysrepo ./...
+	$(GO) build -tags sysrepo -o confd ./cmd/confd
 
 # Run tests with the mock adapter (no cgo, no sysrepo needed).
 test:
