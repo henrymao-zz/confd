@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/example/confd/internal/yangprov"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,32 +21,29 @@ type Config struct {
 	// SysrepoSocket is the path to the sysrepo socket (for the sysrepo adapter).
 	SysrepoSocket string `yaml:"sysrepo_socket"`
 
-	// YANG provisioning.
-	YANG YANGConfig `yaml:"yang"`
-
-	// Plugins (sysrepo-plugind replacement).
+	// Plugins configures the plugin host and YANG provisioning.
+	// Plugin .so files are discovered from Dir; YANG modules and features
+	// are provisioned from each Entry's yang_dir/modules/features.
 	Plugins PluginsConfig `yaml:"plugins"`
 }
 
 // SSHConfig configures the SSH listener.
 type SSHConfig struct {
-	Bind      string `yaml:"bind"`
-	HostKey   string `yaml:"host_key"`
-	Password  string `yaml:"password"`
+	Bind     string `yaml:"bind"`
+	HostKey  string `yaml:"host_key"`
+	Password string `yaml:"password"`
 }
 
-// YANGConfig configures YANG module provisioning.
-type YANGConfig struct {
-	// Manifest is the path to a plugins.yaml manifest file. If empty,
-	// no YANG provisioning is done (modules must be installed manually).
-	Manifest string `yaml:"manifest"`
-}
-
-// PluginsConfig configures the plugin host.
+// PluginsConfig configures the plugin host and YANG provisioning.
 type PluginsConfig struct {
 	// Dir is the directory containing libsrplg-*.so plugin artifacts.
-	Dir   string   `yaml:"dir"`
-	// Names is an allowlist of plugin names to load. Empty = load all in Dir.
+	Dir string `yaml:"dir"`
+	// Entries is the list of plugins to load with their YANG provisioning
+	// specs. Each entry has a name (matched to libsrplg-<name>.so),
+	// a yang_dir, modules list, and optional features.
+	Entries []yangprov.PluginSpec `yaml:"entries"`
+	// Names is an allowlist of plugin names (empty = load all entries).
+	// If non-empty, only entries whose Name matches are loaded.
 	Names []string `yaml:"names"`
 }
 
@@ -118,8 +116,6 @@ func FromFlags(base Config, args []string) (Config, error) {
 			base.Plugins.Dir = strings.TrimPrefix(a, "--plugins-dir=")
 		case strings.HasPrefix(a, "--plugin="):
 			base.Plugins.Names = append(base.Plugins.Names, strings.TrimPrefix(a, "--plugin="))
-		case strings.HasPrefix(a, "--yang-manifest="):
-			base.YANG.Manifest = strings.TrimPrefix(a, "--yang-manifest=")
 		case a == "-h", a == "--help":
 			fmt.Fprintln(os.Stderr, usage())
 			os.Exit(0)
@@ -144,8 +140,7 @@ Flags:
   --password=<pw>        Enable SSH password auth
   --adapter=<mock|sysrepo>  Select backend (default: sysrepo)
   --sysrepo-socket=<path>   sysrepo socket (for --adapter=sysrepo)
-  --plugins-dir=<dir>    Directory with libsrplg-*.so (for --adapter=sysrepo)
+  --plugins-dir=<dir>    Directory with libsrplg-*.so
   --plugin=<name>        Allowlist a plugin (repeatable; empty = all)
-  --yang-manifest=<path> Path to plugins.yaml for YANG provisioning
 `
 }

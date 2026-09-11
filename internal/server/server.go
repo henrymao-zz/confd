@@ -34,9 +34,10 @@ type Config struct {
 	PluginHost pluginhost.Host
 	// PluginSpecs is the list of plugins to load via PluginHost on startup.
 	PluginSpecs []pluginhost.Spec
-	// YangManifest is the path to a plugins.yaml manifest. If empty, no
-	// YANG provisioning is done (modules must be installed manually).
-	YangManifest string
+	// YangProvSpecs is the list of YANG provisioning specs (from the YAML
+	// config's plugins.entries). If non-empty, confd installs missing YANG
+	// modules into sysrepo and loads them into the goyang cache.
+	YangProvSpecs []yangprov.PluginSpec
 }
 
 // Server is a runnable NETCONF server.
@@ -64,24 +65,17 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 
 	// --- YANG provisioning (before plugin host start) --------------------
-	// If a YANG manifest is configured, provision YANG modules into sysrepo
-	// and load them into the goyang cache so capabilities match. The
-	// manifest's YangDir values are the single source of truth for YANG
-	// modules — no separate --yang-path is needed.
-	if cfg.YangManifest != "" {
-		specs, err := yangprov.LoadManifest(cfg.YangManifest)
-		if err != nil {
-			slog.Warn("server: failed to load YANG manifest, skipping provisioning", "error", err)
+	// If YANG provisioning specs are configured, provision YANG modules
+	// into sysrepo and load them into the goyang cache so capabilities match.
+	if len(cfg.YangProvSpecs) > 0 {
+		prov := yangprov.New(conn)
+		if err := prov.Provision(ctx, cfg.YangProvSpecs); err != nil {
+			slog.Warn("server: YANG provisioning failed", "error", err)
 		} else {
-			prov := yangprov.New(conn)
-			if err := prov.Provision(ctx, specs); err != nil {
-				slog.Warn("server: YANG provisioning failed", "error", err)
-			} else {
-				slog.Info("server: YANG modules provisioned", "plugins", len(specs))
-			}
-			if err := prov.LoadCache(cache, specs); err != nil {
-				slog.Warn("server: YANG cache load failed", "error", err)
-			}
+			slog.Info("server: YANG modules provisioned", "plugins", len(cfg.YangProvSpecs))
+		}
+		if err := prov.LoadCache(cache, cfg.YangProvSpecs); err != nil {
+			slog.Warn("server: YANG cache load failed", "error", err)
 		}
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/example/confd/internal/server"
 	"github.com/example/confd/internal/sysrepoadapter"
 	"github.com/example/confd/internal/transport"
+	"github.com/example/confd/internal/yangprov"
 )
 
 func main() {
@@ -59,29 +60,29 @@ func runServe(args []string) error {
 		return fmt.Errorf("unknown adapter: %s", cfg.Adapter)
 	}
 
+	// --- plugin specs (from YAML entries + CLI --plugin allowlist) ---
+	specs := filterPluginSpecs(cfg.Plugins.Entries, cfg.Plugins.Names)
+
+	// Convert yangprov.PluginSpec to pluginhost.Spec for the plugin host.
+	var phSpecs []pluginhost.Spec
+	for _, s := range specs {
+		phSpecs = append(phSpecs, pluginhost.Spec{Name: s.Name, Path: filepath.Join(cfg.Plugins.Dir, "libsrplg-"+s.Name+".so")})
+	}
+
 	// --- plugin host (replaces sysrepo-plugind) ---------------------------
 	var ph pluginhost.Host
-	var specs []pluginhost.Spec
-	if cfg.Plugins.Dir != "" {
-		specs, err = discoverPlugins(cfg.Plugins.Dir, cfg.Plugins.Names)
-		if err != nil {
-			return fmt.Errorf("discover plugins: %w", err)
-		}
-	}
-	if len(specs) > 0 {
+	if len(phSpecs) > 0 {
 		ph = pluginhost.New()
-	} else {
-		ph = nil
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	srv, err := server.New(ctx, server.Config{
-		Adapter:      adapter,
-		PluginHost:   ph,
-		PluginSpecs:  specs,
-		YangManifest: cfg.YANG.Manifest,
+		Adapter:       adapter,
+		PluginHost:    ph,
+		PluginSpecs:   phSpecs,
+		YangProvSpecs: specs,
 	})
 	if err != nil {
 		return err
@@ -111,9 +112,10 @@ func runSchemaList(args []string) error {
 	if err != nil {
 		return err
 	}
+	specs := filterPluginSpecs(cfg.Plugins.Entries, cfg.Plugins.Names)
 	srv, err := server.New(context.Background(), server.Config{
-		Adapter:      sysrepoadapter.NewMock(nil),
-		YangManifest: cfg.YANG.Manifest,
+		Adapter:       sysrepoadapter.NewMock(nil),
+		YangProvSpecs: specs,
 	})
 	if err != nil {
 		return err
@@ -124,27 +126,21 @@ func runSchemaList(args []string) error {
 	return nil
 }
 
-// discoverPlugins scans dir for libsrplg-<name>.so files and returns
-// Specs. If allow is non-empty, only names in the allowlist are included.
-func discoverPlugins(dir string, allow []string) ([]pluginhost.Spec, error) {
-	allowSet := make(map[string]bool, len(allow))
-	for _, n := range allow {
+// filterPluginSpecs returns the PluginSpecs from the YAML entries,
+// filtered by the CLI --plugin allowlist (if non-empty).
+func filterPluginSpecs(entries []yangprov.PluginSpec, names []string) []yangprov.PluginSpec {
+	if len(names) == 0 {
+		return entries
+	}
+	allowSet := make(map[string]bool, len(names))
+	for _, n := range names {
 		allowSet[n] = true
 	}
-	matches, err := filepath.Glob(filepath.Join(dir, "libsrplg-*.so"))
-	if err != nil {
-		return nil, err
-	}
-	var specs []pluginhost.Spec
-	for _, m := range matches {
-		base := filepath.Base(m)
-		// strip "libsrplg-" prefix and ".so" suffix
-		name := base[len("libsrplg-"):]
-		name = name[:len(name)-len(".so")]
-		if len(allow) > 0 && !allowSet[name] {
-			continue
+	var specs []yangprov.PluginSpec
+	for _, e := range entries {
+		if allowSet[e.Name] {
+			specs = append(specs, e)
 		}
-		specs = append(specs, pluginhost.Spec{Name: name, Path: m})
 	}
-	return specs, nil
+	return specs
 }

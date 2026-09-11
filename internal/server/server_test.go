@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"io"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,29 +14,21 @@ import (
 	nemithtransport "nemith.io/netconf/transport"
 
 	"github.com/example/confd/internal/sysrepoadapter"
+	"github.com/example/confd/internal/yangprov"
 )
 
-func yangDir(t *testing.T) string {
-	t.Helper()
-	d, err := filepath.Abs(filepath.Join("..", "..", "yang"))
-	if err != nil {
-		t.Fatal(err)
-	}
+func yangDir() string {
+	d, _ := filepath.Abs(filepath.Join("..", "..", "yang"))
 	return d
 }
 
-// writeManifest creates a temp plugins.yaml pointing at the in-tree yang/
-// directory and returns its path. This is used by tests to load YANG modules
-// via the YANG manifest path instead of the old --yang-path.
-func writeManifest(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "plugins.yaml")
-	content := "plugins:\n  - name: confd-test\n    yang_dir: \"" + yangDir(t) + "\"\n    modules:\n      - confd-test.yang\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	return path
+// testYangSpecs returns a PluginSpec for the in-tree confd-test.yang module.
+func testYangSpecs() []yangprov.PluginSpec {
+	return []yangprov.PluginSpec{{
+		Name:    "confd-test",
+		YangDir: yangDir(),
+		Modules: []string{"confd-test.yang"},
+	}}
 }
 
 // sampleTree builds a small in-memory data tree for the confd-test module.
@@ -66,7 +57,7 @@ func newTestServer(t *testing.T) *Server {
 	mock := sysrepoadapter.NewMock(nil)
 	srv, err := New(context.Background(), Config{
 		Adapter:      mock,
-		YangManifest: writeManifest(t),
+		YangProvSpecs: testYangSpecs(),
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)

@@ -12,7 +12,6 @@ import (
 
 	"github.com/example/confd/internal/schema"
 	"github.com/example/confd/internal/sysrepoadapter"
-	"gopkg.in/yaml.v3"
 )
 
 // PluginSpec describes one plugin's YANG modules and features.
@@ -22,11 +21,6 @@ type PluginSpec struct {
 	Modules    []string          `yaml:"modules"`
 	Features   map[string][]string `yaml:"features"`
 	ImportDirs []string          `yaml:"import_search_dirs"`
-}
-
-// Manifest is the top-level plugins.yaml structure.
-type Manifest struct {
-	Plugins []PluginSpec `yaml:"plugins"`
 }
 
 // Provisioner checks that required YANG modules are installed in sysrepo
@@ -131,23 +125,6 @@ func AutoDiscover(pluginsDir string) []PluginSpec {
 		})
 	}
 	return specs
-}
-
-// LoadManifest reads a plugins.yaml file and returns the PluginSpecs.
-// If the file does not exist, it returns an empty slice and no error.
-func LoadManifest(path string) ([]PluginSpec, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var m Manifest
-	if err := yaml.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("yangprov: parse %s: %w", path, err)
-	}
-	return m.Plugins, nil
 }
 
 // extractModuleName reads a .yang file and extracts the module name.

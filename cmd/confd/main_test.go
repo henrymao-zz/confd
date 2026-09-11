@@ -1,68 +1,42 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/example/confd/internal/yangprov"
 )
 
-func TestDiscoverPlugins_All(t *testing.T) {
-	dir := t.TempDir()
-	files := []string{
-		"libsrplg-ietf-system.so",
-		"libsrplg-ietf-interfaces.so",
-		"libsrplg-ietf-routing.so",
+func TestFilterPluginSpecs_All(t *testing.T) {
+	entries := []yangprov.PluginSpec{
+		{Name: "ietf-system", YangDir: "/usr/lib/confd/yang/ietf-system"},
+		{Name: "ietf-interfaces", YangDir: "/usr/lib/confd/yang/ietf-interfaces"},
+		{Name: "ietf-routing", YangDir: "/usr/lib/confd/yang/ietf-routing"},
 	}
-	for _, f := range files {
-		p := filepath.Join(dir, f)
-		if err := os.WriteFile(p, []byte("dummy"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	specs, err := discoverPlugins(dir, nil)
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
+	specs := filterPluginSpecs(entries, nil)
 	if len(specs) != 3 {
-		t.Fatalf("expected 3 specs, got %d: %v", len(specs), specs)
-	}
-	got := map[string]string{}
-	for _, s := range specs {
-		got[s.Name] = s.Path
-	}
-	for _, want := range []string{"ietf-system", "ietf-interfaces", "ietf-routing"} {
-		if _, ok := got[want]; !ok {
-			t.Errorf("missing spec %q in %v", want, got)
-		}
+		t.Fatalf("expected 3 specs, got %d", len(specs))
 	}
 }
 
-func TestDiscoverPlugins_Allowlist(t *testing.T) {
-	dir := t.TempDir()
-	for _, f := range []string{"libsrplg-ietf-system.so", "libsrplg-ietf-interfaces.so"} {
-		p := filepath.Join(dir, f)
-		if err := os.WriteFile(p, []byte("dummy"), 0644); err != nil {
-			t.Fatal(err)
-		}
+func TestFilterPluginSpecs_Allowlist(t *testing.T) {
+	entries := []yangprov.PluginSpec{
+		{Name: "ietf-system", YangDir: "/usr/lib/confd/yang/ietf-system"},
+		{Name: "ietf-interfaces", YangDir: "/usr/lib/confd/yang/ietf-interfaces"},
 	}
-	specs, err := discoverPlugins(dir, []string{"ietf-interfaces"})
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
+	specs := filterPluginSpecs(entries, []string{"ietf-interfaces"})
 	if len(specs) != 1 {
-		t.Fatalf("expected 1 spec, got %d: %v", len(specs), specs)
+		t.Fatalf("expected 1 spec, got %d", len(specs))
 	}
 	if specs[0].Name != "ietf-interfaces" {
 		t.Errorf("name: %q", specs[0].Name)
 	}
 }
 
-func TestDiscoverPlugins_Empty(t *testing.T) {
-	specs, err := discoverPlugins(t.TempDir(), nil)
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
+func TestFilterPluginSpecs_Empty(t *testing.T) {
+	specs := filterPluginSpecs(nil, nil)
 	if len(specs) != 0 {
 		t.Errorf("expected 0 specs, got %d", len(specs))
 	}
+	_ = filepath.Join // suppress unused import
 }

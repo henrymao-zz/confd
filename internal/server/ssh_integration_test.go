@@ -22,7 +22,7 @@ import (
 func TestServer_SSHEndToEnd(t *testing.T) {
 	mock := sysrepoadapter.NewMock(nil)
 	srv, err := New(context.Background(), Config{
-		YangManifest: writeManifest(t),
+		YangProvSpecs: testYangSpecs(),
 		Adapter:   mock,
 	})
 	if err != nil {
