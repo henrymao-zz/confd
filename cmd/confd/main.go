@@ -22,8 +22,8 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		// No subcommand → interactive CLI shell with auto-connect
+	// If no subcommand (or first arg is a flag), run the interactive shell.
+	if len(os.Args) < 2 || strings.HasPrefix(os.Args[1], "-") {
 		opts, err := parseShellArgs(os.Args[1:])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "confd:", err)
