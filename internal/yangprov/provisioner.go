@@ -68,7 +68,13 @@ func (p *Provisioner) Provision(ctx context.Context, specs []PluginSpec) error {
 	}
 	var queue []pending
 	for _, spec := range specs {
-		searchDirs := strings.Join(spec.ImportDirs, ":")
+		// Build search dirs: include both ImportDirs and YangDir
+		// so sr_install_module can find import modules
+		searchDirsList := append([]string{}, spec.ImportDirs...)
+		if spec.YangDir != "" {
+			searchDirsList = append(searchDirsList, spec.YangDir)
+		}
+		searchDirs := strings.Join(searchDirsList, ":")
 		for _, moduleFile := range spec.Modules {
 			path := filepath.Join(spec.YangDir, moduleFile)
 			if _, err := os.Stat(path); err != nil {
