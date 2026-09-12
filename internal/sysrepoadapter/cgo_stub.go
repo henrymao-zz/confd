@@ -171,9 +171,9 @@ func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
 
 	// Serialize the data tree to XML for parsing
 	var xmlC *C.char
-	rc = C.lyd_print_mem(&xmlC, data.tree, C.LYD_XML, 0)
+	lyRc := C.lyd_print_mem(&xmlC, data.tree, C.LYD_XML, 0)
 	C.sr_release_data(data)
-	if rc != C.LY_SUCCESS {
+	if lyRc != C.LY_SUCCESS {
 		return nil, fmt.Errorf("sysrepoadapter: lyd_print_mem failed")
 	}
 	xmlStr := C.GoString(xmlC)
@@ -182,9 +182,6 @@ func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
 	// Parse XML to extract module names from /sysrepo:sysrepo-modules/module/name
 	var modules []ModuleInfo
 	dec := xml.NewDecoder(strings.NewReader(xmlStr))
-	type xModule struct {
-		Name string `xml:"name"`
-	}
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -192,11 +189,35 @@ func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
 		}
 		if se, ok := tok.(xml.StartElement); ok {
 			if se.Name.Local == "module" {
-				var m xModule
-				_ = dec.DecodeElement(&m)
-				if m.Name != "" {
-					modules = append(modules, ModuleInfo{Name: m.Name})
+				var name string
+				inner := false
+				for {
+					it, ierr := dec.Token()
+					if ierr != nil {
+						break
+					}
+					switch t := it.(type) {
+					case xml.StartElement:
+						if t.Name.Local == "name" {
+							inner = true
+						}
+					case xml.CharData:
+						if inner {
+							name = strings.TrimSpace(string(t))
+						}
+					case xml.EndElement:
+						if t.Name.Local == "name" {
+							inner = false
+						}
+						if t.Name.Local == "module" {
+							if name != "" {
+								modules = append(modules, ModuleInfo{Name: name})
+							}
+							goto nextToken
+						}
+					}
 				}
+			nextToken:
 			}
 		}
 	}
