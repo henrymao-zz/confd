@@ -158,6 +158,8 @@ func (s *Shell) printHelp() {
   disconnect               Close the current session
   show session             Show session info (id, capabilities)
   show capabilities        List server capabilities
+  show running [--filter <xpath>]  Show running config as YAML
+  show startup [--filter <xpath>]  Show startup config as YAML
   list-modules             List installed YANG modules (from capabilities)
   get [--filter <xpath>]   <get> (operational datastore)
   get-config --source <ds> [--filter <xpath>]  <get-config>
@@ -229,7 +231,7 @@ func (s *Shell) cmdShow(args []string) error {
 		return fmt.Errorf("not connected")
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: show <session|capabilities>")
+		return fmt.Errorf("usage: show <session|capabilities|running|startup>")
 	}
 	switch args[0] {
 	case "session":
@@ -241,10 +243,89 @@ func (s *Shell) cmdShow(args []string) error {
 		for cap := range s.session.ServerCaps().All() {
 			fmt.Printf("  %s\n", cap)
 		}
+	case "running", "startup":
+		return s.cmdShowConfig(args)
 	default:
-		return fmt.Errorf("unknown show: %s (use 'show session' or 'show capabilities')", args[0])
+		return fmt.Errorf("unknown show: %s (use 'show session', 'show capabilities', 'show running', or 'show startup')", args[0])
 	}
 	return nil
+}
+
+// cmdShowConfig fetches a datastore (running or startup) via <get-config>
+// and renders the result as YAML instead of XML.
+func (s *Shell) cmdShowConfig(args []string) error {
+	source := args[0]
+	filter := flagValue(args, "filter", "")
+	ctx := context.Background()
+	raw, err := s.execGetConfig(ctx, source, filter)
+	if err != nil {
+		return err
+	}
+	// Extract <data>...</data> from the rpc-reply
+	dataXML := extractDataElement(raw)
+	if dataXML == nil {
+		fmt.Println("(no data)")
+		return nil
+	}
+	yamlStr, err := xmlDataToYAML(dataXML)
+	if err != nil {
+		return fmt.Errorf("convert to YAML: %w", err)
+	}
+	fmt.Print(yamlStr)
+	return nil
+}
+
+// extractDataElement parses an <rpc-reply> XML byte slice and returns
+// the inner XML of the <data> element. Returns nil if no <data> is found.
+func extractDataElement(replyXML []byte) []byte {
+	dec := xml.NewDecoder(strings.NewReader(string(replyXML)))
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if localName(t.Name.Local) == "data" {
+				depth++
+			} else if depth > 0 {
+				depth++
+			}
+		case xml.EndElement:
+			if localName(t.Name.Local) == "data" {
+				// Find the offset of </data> in the original bytes
+				offset := dec.InputOffset()
+				// Return everything between <data> and </data>
+				return extractInner(replyXML, "data", int(offset))
+			}
+		}
+	}
+}
+
+// extractInner finds the content between <data> and </data> tags in
+// the raw XML bytes. offset is the byte position after </data>.
+func extractInner(data []byte, tag string, endOffset int) []byte {
+	s := string(data)
+	openTag := "<" + tag
+	closeTag := "</" + tag + ">"
+	// Find the opening tag
+	start := strings.Index(s, openTag)
+	if start < 0 {
+		return nil
+	}
+	// Skip past the opening tag (including attributes and >)
+	gt := strings.Index(s[start:], ">")
+	if gt < 0 {
+		return nil
+	}
+	contentStart := start + gt + 1
+	// Find the closing tag
+	closeIdx := strings.LastIndex(s[:endOffset], closeTag)
+	if closeIdx < 0 || closeIdx < contentStart {
+		return nil
+	}
+	return data[contentStart:closeIdx]
 }
 
 // --- raw RPC ---
@@ -317,6 +398,17 @@ func (s *Shell) cmdGetConfig(args []string) error {
 	source := flagValue(args, "source", "running")
 	filter := flagValue(args, "filter", "")
 	ctx := context.Background()
+	raw, err := s.execGetConfig(ctx, source, filter)
+	if err != nil {
+		return err
+	}
+	printXML(raw)
+	return nil
+}
+
+// execGetConfig sends a <get-config> RPC and returns the raw reply XML.
+// Shared by cmdGetConfig (XML output) and cmdShow (YAML output).
+func (s *Shell) execGetConfig(ctx context.Context, source, filter string) ([]byte, error) {
 	type getConfigOp struct {
 		XMLName xml.Name    `xml:"get-config"`
 		Source  dsRef       `xml:"source"`
@@ -326,7 +418,16 @@ func (s *Shell) cmdGetConfig(args []string) error {
 	if filter != "" {
 		op.Filter = &filterType{Type: "xpath", Select: filter}
 	}
-	return s.execAndPrint(ctx, op)
+	rpc := &netconf.RPC{
+		MessageID: s.nextMsgID(),
+		Operation: op,
+	}
+	msg, err := s.session.Do(ctx, rpc)
+	if err != nil {
+		return nil, err
+	}
+	defer msg.Close()
+	return io.ReadAll(msg)
 }
 
 func (s *Shell) cmdEditConfig(args []string) error {
