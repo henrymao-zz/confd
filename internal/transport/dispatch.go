@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"nemith.io/netconf"
@@ -89,6 +90,7 @@ func ServerLoop(
 		_ = msgReader.Close()
 
 		opName, err := extractOpName(rpc.InnerXML)
+		os.WriteFile("/tmp/confd-debug.log", []byte(fmt.Sprintf("opName=%q err=%v innerXML=%q\n", opName, err, string(rpc.InnerXML))), 0644)
 		if err != nil {
 			writeErrorReply(sess, rpc.MessageID, netconf.RPCError{
 				Tag:      netconf.ErrMalformedMessage,
