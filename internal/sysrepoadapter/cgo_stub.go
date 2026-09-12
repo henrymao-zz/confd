@@ -107,7 +107,9 @@ import "C"
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
+	"strings"
 	"unsafe"
 )
 
@@ -152,19 +154,53 @@ func (c *cgoConn) ListModules(ctx context.Context) ([]ModuleInfo, error) {
 }
 
 // GetModuleInfo returns the list of YANG modules installed in sysrepo.
+// It parses the sysrepo internal data tree (/sysrepo:sysrepo-modules/module)
+// to extract module names.
 func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
 	var data *C.sr_data_t
 	rc := C.sr_get_module_info((*C.sr_conn_ctx_t)(c.raw), &data)
 	if rc != C.SR_ERR_OK {
 		return nil, fmt.Errorf("sysrepoadapter: sr_get_module_info: %s", C.GoString(C.sr_strerror(rc)))
 	}
-	// TODO: parse the sr_data_t tree into []ModuleInfo.
-	// For now, return empty; the provisioner will install all modules
-	// if GetModuleInfo returns empty (treating it as "nothing installed yet").
-	if data != nil {
-		C.sr_release_data(data)
+	if data == nil || data.tree == nil {
+		if data != nil {
+			C.sr_release_data(data)
+		}
+		return nil, nil
 	}
-	return nil, nil
+
+	// Serialize the data tree to XML for parsing
+	var xmlC *C.char
+	rc = C.lyd_print_mem(&xmlC, data.tree, C.LYD_XML, 0)
+	C.sr_release_data(data)
+	if rc != C.LY_SUCCESS {
+		return nil, fmt.Errorf("sysrepoadapter: lyd_print_mem failed")
+	}
+	xmlStr := C.GoString(xmlC)
+	C.free(unsafe.Pointer(xmlC))
+
+	// Parse XML to extract module names from /sysrepo:sysrepo-modules/module/name
+	var modules []ModuleInfo
+	dec := xml.NewDecoder(strings.NewReader(xmlStr))
+	type xModule struct {
+		Name string `xml:"name"`
+	}
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		if se, ok := tok.(xml.StartElement); ok {
+			if se.Name.Local == "module" {
+				var m xModule
+				_ = dec.DecodeElement(&m)
+				if m.Name != "" {
+					modules = append(modules, ModuleInfo{Name: m.Name})
+				}
+			}
+		}
+	}
+	return modules, nil
 }
 
 // InstallModule installs a YANG module into sysrepo.
