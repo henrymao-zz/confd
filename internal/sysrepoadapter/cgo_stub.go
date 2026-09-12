@@ -43,6 +43,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"os"
 	"unsafe"
 )
 
@@ -206,14 +207,17 @@ func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
 	if xpath == "" || xpath == "/" {
 		xpath = "/*"
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG cgoSession.Get: xpath=%q\n", xpath)
 	cXPath := C.CString(xpath)
 	defer C.free(unsafe.Pointer(cXPath))
 	xmlC := C.cf_get_data_xml((*C.sr_session_ctx_t)(s.raw), cXPath)
 	if xmlC == nil {
+		fmt.Fprintf(os.Stderr, "DEBUG cgoSession.Get: internal error (xmlC==nil)\n")
 		return nil, fmt.Errorf("sysrepoadapter: sr_get_data(%s): internal error", xpath)
 	}
 	xmlStr := C.GoString(xmlC)
 	C.free(unsafe.Pointer(xmlC))
+	fmt.Fprintf(os.Stderr, "DEBUG cgoSession.Get: xmlStr len=%d\n", len(xmlStr))
 	if xmlStr == "" {
 		return &DataNode{XPath: "/", Name: "root"}, nil
 	}
