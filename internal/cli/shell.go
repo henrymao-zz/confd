@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -563,28 +564,59 @@ func (s *Shell) cmdListModules(args []string) error {
 	if err := s.requireSession(); err != nil {
 		return err
 	}
-	fmt.Println("Server capabilities (YANG modules):")
+
+	var modules []struct{ name, rev string }
+	var capabilities []string
+
 	for cap := range s.session.ServerCaps().All() {
-		// Skip NETCONF base capabilities
-		if strings.HasPrefix(cap, "urn:ietf:params:netconf:") {
-			fmt.Printf("  [capability] %s\n", cap)
+		// NETCONF base/capability URIs (not YANG modules)
+		if strings.HasPrefix(cap, "urn:ietf:params:netconf:capability:") ||
+			strings.HasPrefix(cap, "urn:ietf:params:netconf:base:") {
+			capabilities = append(capabilities, cap)
 			continue
 		}
-		// Extract module name and revision from capability URI
-		// Format: urn:ietf:params:xml:ns:yang:<module>?revision=<rev>
+		// YANG module capability URI format:
+		//   <namespace>?revision=<rev>
+		// Extract the module name from the namespace.
 		name := cap
 		rev := ""
 		if idx := strings.Index(cap, "?revision="); idx > 0 {
 			name = cap[:idx]
 			rev = cap[idx+len("?revision="):]
 		}
-		if idx := strings.LastIndex(name, ":"); idx > 0 {
+		// Extract the last path segment after the final ':'
+		// e.g. urn:ietf:params:xml:ns:yang:ietf-system → ietf-system
+		//      http://www.sysrepo.org/yang/sysrepo → sysrepo
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
 			name = name[idx+1:]
 		}
-		if rev != "" {
-			fmt.Printf("  %-30s rev=%s\n", name, rev)
+		// Skip empty names
+		if name == "" || name == "1" || name == "1.0" {
+			// These come from namespace URIs like urn:ietf:params:xml:ns:yang:1
+			// or urn:ietf:params:xml:ns:netconf:default:1.0 — skip them
+			continue
+		}
+		modules = append(modules, struct{ name, rev string }{name, rev})
+	}
+
+	// Sort modules alphabetically
+	sort.Slice(modules, func(i, j int) bool {
+		return modules[i].name < modules[j].name
+	})
+	sort.Strings(capabilities)
+
+	fmt.Printf("Installed YANG modules (%d):\n", len(modules))
+	for _, m := range modules {
+		if m.rev != "" {
+			fmt.Printf("  %-36s %s\n", m.name, m.rev)
 		} else {
-			fmt.Printf("  %-30s\n", name)
+			fmt.Printf("  %-36s\n", m.name)
+		}
+	}
+	if len(capabilities) > 0 {
+		fmt.Printf("\nNETCONF capabilities (%d):\n", len(capabilities))
+		for _, c := range capabilities {
+			fmt.Printf("  %s\n", c)
 		}
 	}
 	return nil
