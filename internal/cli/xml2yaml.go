@@ -114,6 +114,10 @@ func buildYAMLNode(children []*xmlNode) *yaml.Node {
 	// Check if this should be a sequence (single repeated tag name)
 	if len(groups) == 1 && len(groups[0].nodes) > 1 {
 		group := groups[0]
+		// Collapse ip + prefix-length into CIDR if applicable
+		if cidrSeq, ok := tryCIDRSequence(group); ok {
+			return cidrSeq
+		}
 		seqNode := &yaml.Node{Kind: yaml.SequenceNode}
 		for _, n := range group.nodes {
 			seqNode.Content = append(seqNode.Content, xmlNodeToYAML(n))
@@ -127,16 +131,112 @@ func buildYAMLNode(children []*xmlNode) *yaml.Node {
 		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: g.name}
 		if len(g.nodes) > 1 {
 			// Multiple siblings with same name → sequence
+			// Collapse ip + prefix-length into CIDR if applicable
+			if cidrSeq, ok := tryCIDRSequence(g); ok {
+				mapNode.Content = append(mapNode.Content, keyNode, cidrSeq)
+				continue
+			}
 			seqNode := &yaml.Node{Kind: yaml.SequenceNode}
 			for _, n := range g.nodes {
 				seqNode.Content = append(seqNode.Content, xmlNodeToYAML(n))
 			}
 			mapNode.Content = append(mapNode.Content, keyNode, seqNode)
 		} else {
-			mapNode.Content = append(mapNode.Content, keyNode, xmlNodeToYAML(g.nodes[0]))
+			// Single node — try CIDR collapse for address with ip+prefix-length
+			if cidr, ok := tryCIDRSingle(g.nodes[0]); ok {
+				mapNode.Content = append(mapNode.Content, keyNode, cidr)
+			} else {
+				mapNode.Content = append(mapNode.Content, keyNode, xmlNodeToYAML(g.nodes[0]))
+			}
 		}
 	}
 	return mapNode
+}
+
+// tryCIDRSequence checks if a group of address nodes each contain an
+// "ip" child and a "prefix-length" (or "netmask") child. If so, returns
+// a sequence of CIDR-notation scalar nodes (e.g. "192.168.1.1/24").
+func tryCIDRSequence(g childGroup) (*yaml.Node, bool) {
+	for _, n := range g.nodes {
+		if !hasIPAndPrefix(n) {
+			return nil, false
+		}
+	}
+	seqNode := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, n := range g.nodes {
+		cidr := buildCIDR(n)
+		seqNode.Content = append(seqNode.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: cidr})
+	}
+	return seqNode, true
+}
+
+// tryCIDRSingle checks if a single node is an address entry with
+// ip + prefix-length children. If so, returns a CIDR scalar node.
+func tryCIDRSingle(n *xmlNode) (*yaml.Node, bool) {
+	if !hasIPAndPrefix(n) {
+		return nil, false
+	}
+	cidr := buildCIDR(n)
+	return &yaml.Node{Kind: yaml.ScalarNode, Value: cidr}, true
+}
+
+// hasIPAndPrefix returns true if the node has child elements named
+// "ip" and either "prefix-length" or "netmask".
+func hasIPAndPrefix(n *xmlNode) bool {
+	var hasIP, hasPrefix bool
+	for _, c := range n.Children {
+		switch c.Name {
+		case "ip":
+			hasIP = true
+		case "prefix-length", "netmask":
+			hasPrefix = true
+		}
+	}
+	return hasIP && hasPrefix
+}
+
+// buildCIDR extracts the ip and prefix-length (or netmask) from an
+// address node's children and returns CIDR notation (e.g. "10.0.0.1/24").
+// For netmask, converts to prefix length (e.g. 255.255.255.0 → 24).
+func buildCIDR(n *xmlNode) string {
+	ip := ""
+	prefix := ""
+	for _, c := range n.Children {
+		switch c.Name {
+		case "ip":
+			ip = c.Text
+		case "prefix-length":
+			prefix = c.Text
+		case "netmask":
+			prefix = netmaskToPrefix(c.Text)
+		}
+	}
+	if prefix == "" {
+		return ip
+	}
+	return ip + "/" + prefix
+}
+
+// netmaskToPrefix converts a dotted-decimal netmask to a prefix length.
+// e.g. "255.255.255.0" → "24", "255.255.0.0" → "16".
+func netmaskToPrefix(netmask string) string {
+	octets := strings.Split(netmask, ".")
+	if len(octets) != 4 {
+		return "0"
+	}
+	bits := 0
+	for _, o := range octets {
+		val, err := strconv.Atoi(o)
+		if err != nil {
+			return "0"
+		}
+		for i := 7; i >= 0; i-- {
+			if val&(1<<i) != 0 {
+				bits++
+			}
+		}
+	}
+	return strconv.Itoa(bits)
 }
 
 // childGroup holds siblings with the same tag name.
