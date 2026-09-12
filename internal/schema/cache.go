@@ -56,10 +56,8 @@ func New() *Cache {
 }
 
 // LoadDirectory parses every *.yang file directly in dir (no subdirectory
-// recursion) into a single goyang Modules set so imports/includes resolve
-// across files. Subdirectories are intentionally not walked: real YANG
-// repositories (sysrepo's, libyang's) commonly keep the same module under
-// multiple layout subdirs, which would produce duplicate-module errors.
+// recursion). Modules that fail to parse are skipped (goyang is stricter
+// than libyang and may reject some valid YANG files).
 func (c *Cache) LoadDirectory(dir string) error {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.yang"))
 	if err != nil {
@@ -68,7 +66,68 @@ func (c *Cache) LoadDirectory(dir string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	return c.LoadFiles(paths...)
+	return c.LoadFilesTolerant(paths...)
+}
+
+// LoadFilesTolerant is like LoadFiles but skips modules that fail to
+// parse instead of returning an error. This is used when loading from
+// sysrepo's YANG directory where some modules may have augments that
+// goyang can't handle.
+func (c *Cache) LoadFilesTolerant(paths ...string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	type src struct{ path, text string }
+	sources := map[string]src{}
+	ms := yang.NewModules()
+	seen := map[string]bool{}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		name := extractModuleName(string(data))
+		if name == "" || seen[name] {
+			continue
+		}
+		abs, _ := filepath.Abs(p)
+		if err := ms.Parse(string(data), abs); err != nil {
+			continue // skip modules that goyang can't parse
+		}
+		seen[name] = true
+		sources[name] = src{path: abs, text: string(data)}
+	}
+
+	_ = ms.Process() // may return errors for some modules; ignore
+
+	for _, mod := range ms.Modules {
+		if mod == nil || mod.Kind() != "module" {
+			continue
+		}
+		name := mod.Name
+		if c.modules[name] != nil {
+			continue
+		}
+		entry := yang.ToEntry(mod)
+		srcInfo := sources[name]
+		info := &ModuleInfo{
+			Name:        name,
+			Revision:    mod.Current(),
+			Namespace:   strVal(mod.Namespace),
+			Prefix:      mod.GetPrefix(),
+			SourceFile:  srcInfo.path,
+			SourceText:  srcInfo.text,
+			Entry:       entryInfo(entry),
+		}
+		c.modules[name] = info
+		if info.Namespace != "" {
+			c.byNS[info.Namespace] = info
+		}
+		c.text[name] = info.SourceText
+	}
+
+	c.rebuildCaps()
+	return nil
 }
 
 // LoadFiles parses the given YANG files into the cache.
