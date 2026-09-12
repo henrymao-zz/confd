@@ -42,6 +42,7 @@ import "C"
 
 import (
 	"context"
+	"fmt"
 	"unsafe"
 )
 
