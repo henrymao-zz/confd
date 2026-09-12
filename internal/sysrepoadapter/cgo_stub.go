@@ -224,7 +224,6 @@ func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
 	}
 	return modules, nil
 }
-}
 
 // InstallModule installs a YANG module into sysrepo.
 func (c *cgoConn) InstallModule(ctx context.Context, path, searchDirs string, features []string) error {
