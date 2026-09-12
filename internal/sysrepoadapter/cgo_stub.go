@@ -205,7 +205,7 @@ func (s *cgoSession) CurrentDS() Datastore { return s.ds }
 // then parsed into a DataNode tree by the caller's data encoder.
 func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
 	if xpath == "" || xpath == "/" {
-		xpath = "/*"
+		xpath = "/ietf-system:* /ietf-interfaces:* /*"
 	}
 	fmt.Fprintf(os.Stderr, "DEBUG cgoSession.Get: xpath=%q\n", xpath)
 	cXPath := C.CString(xpath)

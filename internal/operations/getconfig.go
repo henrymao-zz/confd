@@ -3,6 +3,8 @@ package operations
 import (
 	"context"
 	"encoding/xml"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/example/confd/internal/rpc"
@@ -21,6 +23,7 @@ type getConfigParams struct {
 }
 
 func (h *getConfigHandler) Handle(ctx rpc.Context, msg *rpc.Message, _, _ string, inner []byte) (*rpc.Reply, error) {
+	fmt.Fprintf(os.Stderr, "DEBUG getConfigHandler: deps.Session=%T\n", h.deps.Session)
 	var p getConfigParams
 	if err := xml.Unmarshal(inner, &p); err != nil {
 		return nil, rpc.NewError(rpc.TagBadElement, "invalid <get-config>: "+err.Error())
