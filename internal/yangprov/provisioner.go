@@ -99,31 +99,68 @@ func (p *Provisioner) LoadCache(cache *schema.Cache, specs []PluginSpec) error {
 	return nil
 }
 
-// AutoDiscover walks a plugins directory and returns PluginSpecs for
-// each subdirectory that contains a yang/ folder. Features are discovered
+// AutoDiscover walks a YANG directory and returns PluginSpecs for
+// each subdirectory that contains .yang files. Features are discovered
 // by parsing the YANG files with goyang — every `feature` declaration
 // found is enabled by default.
+//
+// Supported layouts:
+//   - <dir>/<plugin>/yang/*.yang   (plugin subdirs with yang/ folder)
+//   - <dir>/<plugin>/*.yang        (plugin subdirs with .yang files directly)
+//   - <dir>/yang/*.yang            (flat yang/ folder)
+//   - <dir>/*.yang                 (flat directory)
 func AutoDiscover(pluginsDir string) []PluginSpec {
-	// Look for yang/ subdirectories directly under pluginsDir,
-	// or for subdirectories of pluginsDir that contain a yang/ folder.
-	yangDirs, err := filepath.Glob(filepath.Join(pluginsDir, "*/yang"))
-	if err != nil || len(yangDirs) == 0 {
-		// Try pluginsDir/yang directly (flat layout)
+	var yangDirs []string
+
+	// Layout 1: <dir>/<plugin>/yang/*.yang
+	yangDirs, _ = filepath.Glob(filepath.Join(pluginsDir, "*/yang"))
+
+	// Layout 2: <dir>/<plugin>/*.yang (no yang/ subfolder)
+	subDirs, _ := filepath.Glob(filepath.Join(pluginsDir, "*"))
+	for _, sub := range subDirs {
+		fi, err := os.Stat(sub)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		yangFiles, _ := filepath.Glob(filepath.Join(sub, "*.yang"))
+		if len(yangFiles) > 0 {
+			// Check it's not already added via layout 1
+			already := false
+			for _, yd := range yangDirs {
+				if yd == sub {
+					already = true
+					break
+				}
+			}
+			if !already {
+				yangDirs = append(yangDirs, sub)
+			}
+		}
+	}
+
+	// Layout 3: <dir>/yang/*.yang
+	if len(yangDirs) == 0 {
 		yangDir := filepath.Join(pluginsDir, "yang")
 		if fi, e := os.Stat(yangDir); e == nil && fi.IsDir() {
 			yangDirs = []string{yangDir}
 		}
 	}
+
+	// Layout 4: <dir>/*.yang
 	if len(yangDirs) == 0 {
-		// Try pluginsDir itself if it contains .yang files
 		yangFiles, _ := filepath.Glob(filepath.Join(pluginsDir, "*.yang"))
 		if len(yangFiles) > 0 {
 			yangDirs = []string{pluginsDir}
 		}
 	}
+
 	var specs []PluginSpec
 	for _, yangDir := range yangDirs {
-		pluginName := filepath.Base(filepath.Dir(yangDir))
+		pluginName := filepath.Base(yangDir)
+		// For layout 1 (<dir>/<plugin>/yang), use parent dir name
+		if filepath.Base(yangDir) == "yang" {
+			pluginName = filepath.Base(filepath.Dir(yangDir))
+		}
 		yangFiles, _ := filepath.Glob(filepath.Join(yangDir, "*.yang"))
 		var modules []string
 		for _, f := range yangFiles {
