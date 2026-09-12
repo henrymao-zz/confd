@@ -148,13 +148,7 @@ func (s *Server) buildCapabilities() []string {
 		"urn:ietf:params:netconf:capability:candidate:1.0",
 		"urn:ietf:params:netconf:capability:validate:1.1",
 	}
-	for _, m := range s.cache.Modules() {
-		uri := m.Namespace
-		if m.Revision != "" {
-			uri += "?revision=" + m.Revision
-		}
-		caps = append(caps, uri)
-	}
+	caps = append(caps, s.cache.Capabilities()...)
 	return caps
 }
 
