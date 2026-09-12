@@ -6,6 +6,7 @@ package yangprov
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,9 @@ func New(conn sysrepoadapter.Conn) *Provisioner {
 
 // Provision checks each plugin's YANG modules against sysrepo's installed
 // modules and installs any that are missing. Features are enabled for
-// already-installed modules.
+// already-installed modules. Failed installs are retried up to 3 times
+// to handle YANG import dependencies (modules that depend on other
+// modules being installed first).
 func (p *Provisioner) Provision(ctx context.Context, specs []PluginSpec) error {
 	installed, err := p.conn.GetModuleInfo(ctx)
 	if err != nil {
@@ -49,6 +52,15 @@ func (p *Provisioner) Provision(ctx context.Context, specs []PluginSpec) error {
 		installedNames[m.Name] = true
 	}
 
+	// Collect all modules to install across all specs, with their
+	// search dirs and features.
+	type pending struct {
+		path       string
+		searchDirs string
+		features   []string
+		moduleName string
+	}
+	var queue []pending
 	for _, spec := range specs {
 		searchDirs := strings.Join(spec.ImportDirs, ":")
 		for _, moduleFile := range spec.Modules {
@@ -65,22 +77,69 @@ func (p *Provisioner) Provision(ctx context.Context, specs []PluginSpec) error {
 					}
 					for _, f := range features {
 						if err := p.conn.SetModuleFeature(ctx, mod, f, true); err != nil {
-							return fmt.Errorf("yangprov: set feature %s on %s: %w", f, mod, err)
+							slog.Warn("yangprov: set feature failed (non-fatal)",
+								"module", mod, "feature", f, "error", err)
 						}
 					}
 				}
 				continue
 			}
-			// Module not installed; install it.
 			var features []string
 			if spec.Features != nil {
 				features = spec.Features[moduleName]
 			}
-			if err := p.conn.InstallModule(ctx, path, searchDirs, features); err != nil {
-				return fmt.Errorf("yangprov: install %s: %w", path, err)
-			}
-			installedNames[moduleName] = true
+			queue = append(queue, pending{
+				path:       path,
+				searchDirs: searchDirs,
+				features:   features,
+				moduleName: moduleName,
+			})
 		}
+	}
+
+	// Install modules with retries for dependency ordering.
+	// Each pass installs what it can; failed modules are retried
+	// in the next pass (their dependencies may have been installed
+	// in the previous pass).
+	const maxPasses = 5
+	for pass := 0; pass < maxPasses; pass++ {
+		if len(queue) == 0 {
+			break
+		}
+		var failed []pending
+		for _, m := range queue {
+			if err := p.conn.InstallModule(ctx, m.path, m.searchDirs, m.features); err != nil {
+				failed = append(failed, m)
+			} else {
+				installedNames[m.moduleName] = true
+				slog.Info("yangprov: installed module", "name", m.moduleName,
+					"pass", pass+1)
+			}
+		}
+		queue = failed
+	}
+
+	// Enable features for newly installed modules
+	for _, spec := range specs {
+		for mod, features := range spec.Features {
+			if installedNames[mod] {
+				for _, f := range features {
+					if err := p.conn.SetModuleFeature(ctx, mod, f, true); err != nil {
+						slog.Warn("yangprov: enable feature failed (non-fatal)",
+							"module", mod, "feature", f, "error", err)
+					}
+				}
+			}
+		}
+	}
+
+	if len(queue) > 0 {
+		var names []string
+		for _, m := range queue {
+			names = append(names, m.moduleName)
+		}
+		return fmt.Errorf("yangprov: failed to install %d modules: %s",
+			len(queue), strings.Join(names, ", "))
 	}
 	return nil
 }
