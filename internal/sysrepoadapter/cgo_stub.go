@@ -10,6 +10,8 @@ package sysrepoadapter
 #include <libyang/libyang.h>
 #include <sysrepo.h>
 #include <stdlib.h>
+#include <dirent.h>
+#include <string.h>
 
 // cf_get_data_xml calls sr_get_data to retrieve a libyang data tree,
 // then uses lyd_print_mem to serialize it to XML. Returns the XML string
@@ -39,67 +41,57 @@ static char *cf_get_data_xml(sr_session_ctx_t *session, const char *xpath) {
 // cf_get_all_data_xml queries all installed modules and concatenates
 // their XML output. This is used for the no-filter get-config case where
 // we need to return the entire datastore.
-static char *cf_get_all_data_xml(sr_conn_ctx_t *conn, sr_session_ctx_t *session) {
-    sr_data_t *info = NULL;
-    int rc = sr_get_module_info(conn, &info);
-    if (rc != SR_ERR_OK) {
-        return strdup("");
-    }
-    if (info == NULL || info->tree == NULL) {
-        if (info) sr_release_data(info);
-        return strdup("");
-    }
+// Uses the filesystem (/etc/sysrepo/data/*.startup) to discover installed
+// modules, avoiding sr_get_module_info which crashes in sysrepo v5.1.0.
+static char *cf_get_all_data_xml(sr_session_ctx_t *session) {
+    DIR *dir = opendir("/etc/sysrepo/data");
+    if (!dir) return strdup("");
 
-    // Iterate over the module list in the sysrepo data tree.
-    // The sysrepo internal data tree has /sysrepo:sysrepo-modules/module
-    // entries with a "name" leaf for each installed module.
     char *result = strdup("");
-    struct lyd_node *mod_node = NULL;
-    struct lyd_node *first = lyd_child(info->tree);
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        const char *name = entry->d_name;
+        // Look for *.startup files
+        size_t len = strlen(name);
+        if (len < 9 || strcmp(name + len - 8, ".startup") != 0)
+            continue;
 
-    // Walk all siblings at the top level
-    for (struct lyd_node *iter = info->tree; iter; iter = (struct lyd_node *)iter->next) {
-        // Look for module entries
-        for (struct lyd_node *child = lyd_child(iter); child; child = (struct lyd_node *)child->next) {
-            // Get the module name from the "name" leaf
-            struct lyd_node *name_node = NULL;
-            for (struct lyd_node *n = lyd_child(child); n; n = (struct lyd_node *)n->next) {
-                const char *node_name = LYD_NAME(n);
-                if (node_name && strcmp(node_name, "name") == 0) {
-                    name_node = n;
-                    break;
-                }
-            }
-            if (!name_node) continue;
+        // Extract module name (remove ".startup" suffix)
+        char mod_name[256];
+        size_t mod_len = len - 8;
+        if (mod_len >= sizeof(mod_name)) continue;
+        memcpy(mod_name, name, mod_len);
+        mod_name[mod_len] = '\0';
 
-            const char *mod_name = lyd_get_value(name_node);
-            if (!mod_name) continue;
+        // Skip internal sysrepo modules
+        if (strncmp(mod_name, "sysrepo", 7) == 0) continue;
+        if (strncmp(mod_name, "ietf-netconf", 12) == 0) continue;
+        if (strncmp(mod_name, "ietf-datastores", 15) == 0) continue;
+        if (strncmp(mod_name, "ietf-origin", 11) == 0) continue;
+        if (strncmp(mod_name, "ietf-factory-default", 20) == 0) continue;
+        if (strncmp(mod_name, "ietf-yang-library", 17) == 0) continue;
+        if (strncmp(mod_name, "ietf-yang-metadata", 17) == 0) continue;
+        if (strncmp(mod_name, "ietf-yang-schema-mount", 21) == 0) continue;
+        if (strncmp(mod_name, "ietf-yang-structure-ext", 22) == 0) continue;
+        if (strncmp(mod_name, "default", 7) == 0) continue;
+        if (strncmp(mod_name, "yang", 4) == 0) continue;
 
-            // Skip internal sysrepo modules
-            if (strncmp(mod_name, "sysrepo", 7) == 0) continue;
-            if (strncmp(mod_name, "ietf-netconf", 12) == 0) continue;
-            if (strncmp(mod_name, "ietf-datastores", 15) == 0) continue;
-            if (strncmp(mod_name, "ietf-origin", 11) == 0) continue;
-            if (strncmp(mod_name, "ietf-factory-default", 20) == 0) continue;
+        // Build XPath: /<mod_name>:*
+        char xpath[256];
+        snprintf(xpath, sizeof(xpath), "/%s:*", mod_name);
 
-            // Build XPath: /<mod_name>:*
-            char xpath[256];
-            snprintf(xpath, sizeof(xpath), "/%s:*", mod_name);
-
-            // Query data for this module
-            char *mod_xml = cf_get_data_xml(session, xpath);
-            if (mod_xml && mod_xml[0] != '\0') {
-                // Append to result
-                char *new_result = NULL;
-                asprintf(&new_result, "%s%s", result, mod_xml);
-                free(result);
-                result = new_result;
-            }
-            free(mod_xml);
+        // Query data for this module
+        char *mod_xml = cf_get_data_xml(session, xpath);
+        if (mod_xml && mod_xml[0] != '\0') {
+            char *new_result = NULL;
+            asprintf(&new_result, "%s%s", result, mod_xml);
+            free(result);
+            result = new_result;
         }
+        free(mod_xml);
     }
 
-    sr_release_data(info);
+    closedir(dir);
     return result;
 }
 */
@@ -348,7 +340,7 @@ func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
 	var xmlC *C.char
 	if xpath == "" || xpath == "/" {
 		// No-filter case: query all installed modules and concatenate.
-		xmlC = C.cf_get_all_data_xml((*C.sr_conn_ctx_t)(s.connRaw), (*C.sr_session_ctx_t)(s.raw))
+		xmlC = C.cf_get_all_data_xml((*C.sr_session_ctx_t)(s.raw))
 	} else {
 		cXPath := C.CString(xpath)
 		xmlC = C.cf_get_data_xml((*C.sr_session_ctx_t)(s.raw), cXPath)
