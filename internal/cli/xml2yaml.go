@@ -11,23 +11,40 @@ import (
 // xmlDataToYAML converts the inner XML of a <get-config> <data> element
 // into a YAML string. All xmlns attributes are stripped, repeated sibling
 // elements become YAML sequences, and leaf text values are auto-typed.
+// YANG key leaf names (name, ip, key, id, etc.) are rendered first in
+// each mapping, followed by remaining fields alphabetically.
 func xmlDataToYAML(xmlData []byte) (string, error) {
-	m, err := xmlToMap(xmlData)
-	if err != nil {
-		return "", err
-	}
-	out, err := yaml.Marshal(m)
+	root := parseXML(xmlData)
+	node := buildYAMLNode(root.Children)
+	out, err := yaml.Marshal(node)
 	if err != nil {
 		return "", err
 	}
 	return string(out), nil
 }
 
-// xmlToMap parses XML bytes into a generic map[string]interface{} tree.
-// The top-level elements become keys in the returned map. Namespace
-// declarations (xmlns*) are stripped. Attributes are prefixed with "@".
-// Repeated sibling elements with the same tag name become a slice.
-func xmlToMap(xmlData []byte) (map[string]interface{}, error) {
+// keyPriority defines the rendering order for common YANG key leaf names.
+// Keys listed here are rendered first (in this order), then all other
+// fields alphabetically.
+var keyPriority = map[string]int{
+	"name":      0,
+	"ip":        1,
+	"key":       2,
+	"id":        3,
+	"identifier": 4,
+	"vlan-id":   5,
+}
+
+// xmlNode is an intermediate representation for the XML tree.
+type xmlNode struct {
+	Name     string
+	Attrs    map[string]string
+	Text     string
+	Children []*xmlNode
+}
+
+// parseXML builds an xmlNode tree from raw XML bytes.
+func parseXML(xmlData []byte) *xmlNode {
 	dec := xml.NewDecoder(strings.NewReader(string(xmlData)))
 	root := &xmlNode{Name: "", Children: []*xmlNode{}}
 	stack := []*xmlNode{root}
@@ -39,7 +56,6 @@ func xmlToMap(xmlData []byte) (map[string]interface{}, error) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			// Strip namespace from element name
 			name := localName(t.Name.Local)
 			node := &xmlNode{
 				Name:     name,
@@ -61,18 +77,7 @@ func xmlToMap(xmlData []byte) (map[string]interface{}, error) {
 			}
 		}
 	}
-
-	// Build map from top-level children of root
-	result := buildMap(root.Children)
-	return result, nil
-}
-
-// xmlNode is an intermediate representation for the XML tree.
-type xmlNode struct {
-	Name     string
-	Attrs    map[string]string
-	Text     string
-	Children []*xmlNode
+	return root
 }
 
 // localName strips any namespace prefix from an element name.
@@ -87,7 +92,6 @@ func localName(name string) string {
 func attrsMap(attrs []xml.Attr) map[string]string {
 	m := map[string]string{}
 	for _, a := range attrs {
-		// Skip namespace declarations
 		if a.Name.Local == "xmlns" || a.Name.Space == "xmlns" {
 			continue
 		}
@@ -100,74 +104,141 @@ func attrsMap(attrs []xml.Attr) map[string]string {
 	return m
 }
 
-// buildMap converts a slice of xmlNodes into a map. Repeated element
-// names become slices.
-func buildMap(nodes []*xmlNode) map[string]interface{} {
-	m := map[string]interface{}{}
-	for _, n := range nodes {
-		val := nodeValue(n)
-		if existing, ok := m[n.Name]; ok {
-			// Already have this tag name — convert to slice
-			if s, ok2 := existing.([]interface{}); ok2 {
-				m[n.Name] = append(s, val)
-			} else {
-				m[n.Name] = []interface{}{existing, val}
+// buildYAMLNode converts a slice of xmlNodes (siblings) into a yaml.Node.
+// If all siblings have the same tag name, the result is a sequence node.
+// Otherwise, it's a mapping node with key-priority ordering.
+func buildYAMLNode(children []*xmlNode) *yaml.Node {
+	// Group siblings by tag name to detect repeated elements
+	groups := groupChildren(children)
+
+	// Check if this should be a sequence (single repeated tag name)
+	if len(groups) == 1 && len(groups[0].nodes) > 1 {
+		group := groups[0]
+		seqNode := &yaml.Node{Kind: yaml.SequenceNode}
+		for _, n := range group.nodes {
+			seqNode.Content = append(seqNode.Content, xmlNodeToYAML(n))
+		}
+		return seqNode
+	}
+
+	// Mapping node with sorted keys
+	mapNode := &yaml.Node{Kind: yaml.MappingNode}
+	for _, g := range groups {
+		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: g.name}
+		if len(g.nodes) > 1 {
+			// Multiple siblings with same name → sequence
+			seqNode := &yaml.Node{Kind: yaml.SequenceNode}
+			for _, n := range g.nodes {
+				seqNode.Content = append(seqNode.Content, xmlNodeToYAML(n))
 			}
+			mapNode.Content = append(mapNode.Content, keyNode, seqNode)
 		} else {
-			m[n.Name] = val
+			mapNode.Content = append(mapNode.Content, keyNode, xmlNodeToYAML(g.nodes[0]))
 		}
 	}
-	return m
+	return mapNode
 }
 
-// nodeValue converts a single xmlNode into its Go value:
-// leaf (text only) → auto-typed scalar
-// container (child elements) → nested map
-// attributes are added as @-prefixed keys
-func nodeValue(n *xmlNode) interface{} {
-	// If the node has child elements, build a nested map
-	if len(n.Children) > 0 {
-		m := buildMap(n.Children)
-		// Add attributes as @-prefixed entries
-		for k, v := range n.Attrs {
-			m["@"+k] = v
-		}
-		return m
-	}
-
-	// Leaf node — use text value, auto-typed
-	if n.Text == "" {
-		// Check for attributes only
-		if len(n.Attrs) > 0 {
-			m := map[string]interface{}{}
-			for k, v := range n.Attrs {
-				m["@"+k] = v
-			}
-			return m
-		}
-		return nil
-	}
-
-	return autoType(n.Text)
+// childGroup holds siblings with the same tag name.
+type childGroup struct {
+	name  string
+	nodes []*xmlNode
 }
 
-// autoType converts a string to bool, int64, or float64 if possible,
-// otherwise returns the string as-is.
-func autoType(s string) interface{} {
-	// Boolean
-	if s == "true" {
+// groupChildren groups sibling xmlNodes by tag name, preserving first
+// appearance order, then sorts groups by key priority.
+func groupChildren(children []*xmlNode) []childGroup {
+	var order []string
+	groupMap := map[string]*childGroup{}
+	for _, n := range children {
+		g, ok := groupMap[n.Name]
+		if !ok {
+			g = &childGroup{name: n.Name}
+			groupMap[n.Name] = g
+			order = append(order, n.Name)
+		}
+		g.nodes = append(g.nodes, n)
+	}
+	// Sort by key priority, then alphabetically
+	result := make([]childGroup, 0, len(order))
+	for _, name := range order {
+		result = append(result, *groupMap[name])
+	}
+	sortGroups(result)
+	return result
+}
+
+// sortGroups sorts child groups by key priority (name, ip, key, id
+// first), then alphabetically.
+func sortGroups(groups []childGroup) {
+	for i := 1; i < len(groups); i++ {
+		for j := i; j > 0 && lessGroup(groups[j], groups[j-1]); j-- {
+			groups[j], groups[j-1] = groups[j-1], groups[j]
+		}
+	}
+}
+
+// lessGroup returns true if group a should be rendered before group b.
+func lessGroup(a, b childGroup) bool {
+	pa, oka := keyPriority[a.name]
+	pb, okb := keyPriority[b.name]
+	if oka && okb {
+		return pa < pb
+	}
+	if oka {
 		return true
 	}
-	if s == "false" {
+	if okb {
 		return false
 	}
-	// Integer
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return i
+	return a.name < b.name
+}
+
+// xmlNodeToYAML converts a single xmlNode into a yaml.Node:
+// leaf (text only) → scalar node
+// container (child elements) → mapping node
+func xmlNodeToYAML(n *xmlNode) *yaml.Node {
+	// If the node has child elements, build a nested mapping
+	if len(n.Children) > 0 {
+		childNode := buildYAMLNode(n.Children)
+		// Add attributes as @-prefixed entries at the end
+		if len(n.Attrs) > 0 {
+			for k, v := range n.Attrs {
+				keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: "@" + k}
+				valNode := &yaml.Node{Kind: yaml.ScalarNode, Value: v}
+				childNode.Content = append(childNode.Content, keyNode, valNode)
+			}
+		}
+		return childNode
 	}
-	// Float
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
+
+	// Leaf node
+	if n.Text == "" {
+		if len(n.Attrs) > 0 {
+			mapNode := &yaml.Node{Kind: yaml.MappingNode}
+			for k, v := range n.Attrs {
+				keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: "@" + k}
+				valNode := &yaml.Node{Kind: yaml.ScalarNode, Value: v}
+				mapNode.Content = append(mapNode.Content, keyNode, valNode)
+			}
+			return mapNode
+		}
+		return &yaml.Node{Kind: yaml.ScalarNode, Value: "null"}
 	}
-	return s
+
+	return &yaml.Node{Kind: yaml.ScalarNode, Value: n.Text, Tag: yamlTag(n.Text)}
+}
+
+// yamlTag returns the YAML tag for auto-typed scalar values.
+func yamlTag(s string) string {
+	if s == "true" || s == "false" {
+		return "!!bool"
+	}
+	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return "!!int"
+	}
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return "!!float"
+	}
+	return ""
 }
