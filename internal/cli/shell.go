@@ -103,6 +103,8 @@ func (s *Shell) Run() error {
 			cmdErr = s.cmdKillSession(args)
 		case "close-session":
 			cmdErr = s.cmdCloseSession(args)
+		case "list-modules":
+			cmdErr = s.cmdListModules(args)
 		default:
 			fmt.Printf("Unknown command: %s (type 'help' for commands)\n", cmd)
 		}
@@ -155,6 +157,7 @@ func (s *Shell) printHelp() {
   disconnect               Close the current session
   show session             Show session info (id, capabilities)
   show capabilities        List server capabilities
+  list-modules             List installed YANG modules (from capabilities)
   get [--filter <xpath>]   <get> (operational datastore)
   get-config --source <ds> [--filter <xpath>]  <get-config>
   edit-config --target <ds> --config <xml>     <edit-config>
@@ -552,4 +555,37 @@ func printXML(data []byte) {
 		return
 	}
 	fmt.Println(string(data))
+}
+
+// cmdListModules queries the server for its advertised capabilities and
+// prints the YANG module names extracted from the capability URIs.
+func (s *Shell) cmdListModules(args []string) error {
+	if err := s.requireSession(); err != nil {
+		return err
+	}
+	fmt.Println("Server capabilities (YANG modules):")
+	for cap := range s.session.ServerCaps().All() {
+		// Skip NETCONF base capabilities
+		if strings.HasPrefix(cap, "urn:ietf:params:netconf:") {
+			fmt.Printf("  [capability] %s\n", cap)
+			continue
+		}
+		// Extract module name and revision from capability URI
+		// Format: urn:ietf:params:xml:ns:yang:<module>?revision=<rev>
+		name := cap
+		rev := ""
+		if idx := strings.Index(cap, "?revision="); idx > 0 {
+			name = cap[:idx]
+			rev = cap[idx+len("?revision="):]
+		}
+		if idx := strings.LastIndex(name, ":"); idx > 0 {
+			name = name[idx+1:]
+		}
+		if rev != "" {
+			fmt.Printf("  %-30s rev=%s\n", name, rev)
+		} else {
+			fmt.Printf("  %-30s\n", name)
+		}
+	}
+	return nil
 }

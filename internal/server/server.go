@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 
 	"github.com/example/confd/internal/data"
@@ -77,6 +78,11 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		if err := prov.LoadCache(cache, cfg.YangProvSpecs); err != nil {
 			slog.Warn("server: YANG cache load failed", "error", err)
 		}
+	} else {
+		// No manifest: auto-load YANG from sysrepo's installed modules.
+		// Query the conn for installed module info and load YANG files
+		// from the sysrepo YANG directory.
+		loadYangFromSysrepo(ctx, conn, cache)
 	}
 
 	// --- plugin host (replaces sysrepo-plugind) ---------------------------
@@ -100,6 +106,23 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		reg:        reg,
 		pluginHost: ph,
 	}, nil
+}
+
+// loadYangFromSysrepo queries the sysrepo connection for installed
+// modules and loads their YANG files from the sysrepo YANG directory
+// into the goyang cache. This is used when no YANG manifest is
+// configured — confd auto-discovers modules from sysrepo.
+func loadYangFromSysrepo(ctx context.Context, conn sysrepoadapter.Conn, cache *schema.Cache) {
+	yangDir := "/etc/sysrepo/yang"
+	if _, err := os.Stat(yangDir); err != nil {
+		slog.Warn("server: sysrepo YANG dir not found, skipping auto-load", "dir", yangDir)
+		return
+	}
+	if err := cache.LoadDirectory(yangDir); err != nil {
+		slog.Warn("server: failed to load YANG from sysrepo dir", "dir", yangDir, "error", err)
+		return
+	}
+	slog.Info("server: YANG modules loaded from sysrepo", "dir", yangDir, "count", len(cache.Modules()))
 }
 
 // Cache returns the server's schema cache (for inspection / tests).
