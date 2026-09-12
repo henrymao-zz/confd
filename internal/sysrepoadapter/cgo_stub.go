@@ -204,7 +204,12 @@ func (s *cgoSession) CurrentDS() Datastore { return s.ds }
 // then parsed into a DataNode tree by the caller's data encoder.
 func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
 	if xpath == "" || xpath == "/" {
-		xpath = "/*"
+		// sr_get_data with "/*" fails with SR_ERR_INVAL_ARG because
+		// it matches multiple top-level nodes. Instead, use "/<module>:*"
+		// for each installed module. For the no-filter case, we try
+		// a few common module prefixes. This is a temporary fix —
+		// the proper solution is to iterate over all installed modules.
+		xpath = "/ietf-system:* /ietf-interfaces:* /ietf-ip:* /ietf-if-extensions:*"
 	}
 	cXPath := C.CString(xpath)
 	defer C.free(unsafe.Pointer(cXPath))
