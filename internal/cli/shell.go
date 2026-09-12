@@ -296,6 +296,16 @@ type filterType struct {
 	Select  string   `xml:"select,attr,omitempty"`
 }
 
+// dsRef wraps a datastore name as inner XML so it serializes as
+// <source><running/></source> instead of <source>running</source>.
+type dsRef struct {
+	Data []byte `xml:",innerxml"`
+}
+
+func newDSRef(name string) dsRef {
+	return dsRef{Data: []byte("<" + name + "/>")}
+}
+
 func (s *Shell) cmdGetConfig(args []string) error {
 	if err := s.requireSession(); err != nil {
 		return err
@@ -305,18 +315,14 @@ func (s *Shell) cmdGetConfig(args []string) error {
 	ctx := context.Background()
 	type getConfigOp struct {
 		XMLName xml.Name    `xml:"get-config"`
-		Source  sourceType  `xml:"source"`
+		Source  dsRef       `xml:"source"`
 		Filter  *filterType `xml:"filter,omitempty"`
 	}
-	op := &getConfigOp{Source: sourceType{Inner: source}}
+	op := &getConfigOp{Source: newDSRef(source)}
 	if filter != "" {
 		op.Filter = &filterType{Type: "xpath", Select: filter}
 	}
 	return s.execAndPrint(ctx, op)
-}
-
-type sourceType struct {
-	Inner string `xml:",innerxml"`
 }
 
 func (s *Shell) cmdEditConfig(args []string) error {
@@ -340,21 +346,18 @@ func (s *Shell) cmdEditConfig(args []string) error {
 	ctx := context.Background()
 	type editConfigOp struct {
 		XMLName      xml.Name    `xml:"edit-config"`
-		Target       targetType  `xml:"target"`
+		Target       dsRef       `xml:"target"`
 		DefaultOp    string      `xml:"default-operation"`
 		Config       netconf.RawXML `xml:"config"`
 	}
 	op := &editConfigOp{
-		Target:    targetType{Inner: target},
+		Target:    newDSRef(target),
 		DefaultOp: defaultOp,
 		Config:    netconf.RawXML(config),
 	}
 	return s.execAndPrint(ctx, op)
 }
 
-type targetType struct {
-	Inner string `xml:",innerxml"`
-}
 
 func (s *Shell) cmdCopyConfig(args []string) error {
 	if err := s.requireSession(); err != nil {
@@ -365,12 +368,12 @@ func (s *Shell) cmdCopyConfig(args []string) error {
 	ctx := context.Background()
 	type copyConfigOp struct {
 		XMLName xml.Name   `xml:"copy-config"`
-		Target  targetType `xml:"target"`
-		Source  sourceType `xml:"source"`
+		Target  dsRef `xml:"target"`
+		Source  dsRef `xml:"source"`
 	}
 	op := &copyConfigOp{
-		Target: targetType{Inner: target},
-		Source: sourceType{Inner: source},
+		Target: newDSRef(target),
+		Source: newDSRef(source),
 	}
 	return s.execAndPrint(ctx, op)
 }
@@ -383,9 +386,9 @@ func (s *Shell) cmdDeleteConfig(args []string) error {
 	ctx := context.Background()
 	type deleteConfigOp struct {
 		XMLName xml.Name   `xml:"delete-config"`
-		Target  targetType `xml:"target"`
+		Target  dsRef `xml:"target"`
 	}
-	op := &deleteConfigOp{Target: targetType{Inner: target}}
+	op := &deleteConfigOp{Target: newDSRef(target)}
 	return s.execAndPrint(ctx, op)
 }
 
@@ -397,9 +400,9 @@ func (s *Shell) cmdLock(args []string) error {
 	ctx := context.Background()
 	type lockOp struct {
 		XMLName xml.Name   `xml:"lock"`
-		Target  targetType `xml:"target"`
+		Target  dsRef `xml:"target"`
 	}
-	op := &lockOp{Target: targetType{Inner: target}}
+	op := &lockOp{Target: newDSRef(target)}
 	return s.execAndPrint(ctx, op)
 }
 
@@ -411,9 +414,9 @@ func (s *Shell) cmdUnlock(args []string) error {
 	ctx := context.Background()
 	type unlockOp struct {
 		XMLName xml.Name   `xml:"unlock"`
-		Target  targetType `xml:"target"`
+		Target  dsRef `xml:"target"`
 	}
-	op := &unlockOp{Target: targetType{Inner: target}}
+	op := &unlockOp{Target: newDSRef(target)}
 	return s.execAndPrint(ctx, op)
 }
 
@@ -447,9 +450,9 @@ func (s *Shell) cmdValidate(args []string) error {
 	ctx := context.Background()
 	type validateOp struct {
 		XMLName xml.Name   `xml:"validate"`
-		Source  sourceType `xml:"source"`
+		Source  dsRef `xml:"source"`
 	}
-	op := &validateOp{Source: sourceType{Inner: source}}
+	op := &validateOp{Source: newDSRef(source)}
 	return s.execAndPrint(ctx, op)
 }
 
