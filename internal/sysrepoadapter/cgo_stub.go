@@ -13,7 +13,7 @@ package sysrepoadapter
 
 // cf_get_data_xml calls sr_get_data to retrieve a libyang data tree,
 // then uses lyd_print_mem to serialize it to XML. Returns the XML string
-// (caller must free with free()) or NULL on error.
+// (caller must free with free()) or empty string for no data, or NULL on error.
 static char *cf_get_data_xml(sr_session_ctx_t *session, const char *xpath) {
     sr_data_t *data = NULL;
     int rc = sr_get_data(session, xpath, 0, 0, 0, &data);
@@ -34,6 +34,73 @@ static char *cf_get_data_xml(sr_session_ctx_t *session, const char *xpath) {
         return NULL;
     }
     return xml;
+}
+
+// cf_get_all_data_xml queries all installed modules and concatenates
+// their XML output. This is used for the no-filter get-config case where
+// we need to return the entire datastore.
+static char *cf_get_all_data_xml(sr_conn_ctx_t *conn, sr_session_ctx_t *session) {
+    sr_data_t *info = NULL;
+    int rc = sr_get_module_info(conn, &info);
+    if (rc != SR_ERR_OK) {
+        return strdup("");
+    }
+    if (info == NULL || info->tree == NULL) {
+        if (info) sr_release_data(info);
+        return strdup("");
+    }
+
+    // Iterate over the module list in the sysrepo data tree.
+    // The sysrepo internal data tree has /sysrepo:sysrepo-modules/module
+    // entries with a "name" leaf for each installed module.
+    char *result = strdup("");
+    struct lyd_node *mod_node = NULL;
+    struct lyd_node *first = lyd_child(info->tree);
+
+    // Walk all siblings at the top level
+    for (struct lyd_node *iter = info->tree; iter; iter = (struct lyd_node *)iter->next) {
+        // Look for module entries
+        for (struct lyd_node *child = lyd_child(iter); child; child = (struct lyd_node *)child->next) {
+            // Get the module name from the "name" leaf
+            struct lyd_node *name_node = NULL;
+            for (struct lyd_node *n = lyd_child(child); n; n = (struct lyd_node *)n->next) {
+                const char *node_name = LYD_NAME(n);
+                if (node_name && strcmp(node_name, "name") == 0) {
+                    name_node = n;
+                    break;
+                }
+            }
+            if (!name_node) continue;
+
+            const char *mod_name = lyd_get_value(name_node);
+            if (!mod_name) continue;
+
+            // Skip internal sysrepo modules
+            if (strncmp(mod_name, "sysrepo", 7) == 0) continue;
+            if (strncmp(mod_name, "ietf-netconf", 12) == 0) continue;
+            if (strncmp(mod_name, "ietf-datastores", 15) == 0) continue;
+            if (strncmp(mod_name, "ietf-origin", 11) == 0) continue;
+            if (strncmp(mod_name, "ietf-factory-default", 20) == 0) continue;
+
+            // Build XPath: /<mod_name>:*
+            char xpath[256];
+            snprintf(xpath, sizeof(xpath), "/%s:*", mod_name);
+
+            // Query data for this module
+            char *mod_xml = cf_get_data_xml(session, xpath);
+            if (mod_xml && mod_xml[0] != '\0') {
+                // Append to result
+                char *new_result = NULL;
+                asprintf(&new_result, "%s%s", result, mod_xml);
+                free(result);
+                result = new_result;
+            }
+            free(mod_xml);
+        }
+    }
+
+    sr_release_data(info);
+    return result;
 }
 */
 import "C"
@@ -152,7 +219,7 @@ func (c *cgoConn) OpenSession(ctx context.Context, user string) (Session, error)
 	if rc != C.SR_ERR_OK {
 		return nil, fmt.Errorf("sysrepoadapter: sr_session_start: %s", C.GoString(C.sr_strerror(rc)))
 	}
-	return &cgoSession{raw: unsafe.Pointer(sess), ds: Running}, nil
+	return &cgoSession{raw: unsafe.Pointer(sess), connRaw: c.raw, ds: Running}, nil
 }
 
 // Close disconnects from sysrepo.
@@ -167,8 +234,9 @@ func (c *cgoConn) Close() error {
 
 // cgoSession implements Session.
 type cgoSession struct {
-	raw unsafe.Pointer // *C.sr_session_ctx_t
-	ds  Datastore
+	raw     unsafe.Pointer // *C.sr_session_ctx_t
+	connRaw unsafe.Pointer // *C.sr_conn_ctx_t (for module info queries)
+	ds      Datastore
 }
 
 // SwitchDS switches the session's active datastore.
@@ -201,17 +269,15 @@ func (s *cgoSession) CurrentDS() Datastore { return s.ds }
 // a libyang tree) and serializes it to XML via lyd_print_mem. The XML is
 // then parsed into a DataNode tree by the caller's data encoder.
 func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
+	var xmlC *C.char
 	if xpath == "" || xpath == "/" {
-		// sr_get_data with "/*" fails with SR_ERR_INVAL_ARG because
-		// it matches multiple top-level nodes. Instead, use specific
-		// module container XPaths. This is a temporary fix — the proper
-		// solution is to iterate over all installed modules via
-		// sr_get_module_info and query each module's data.
-		xpath = "/ietf-system:system"
+		// No-filter case: query all installed modules and concatenate.
+		xmlC = C.cf_get_all_data_xml((*C.sr_conn_ctx_t)(s.connRaw), (*C.sr_session_ctx_t)(s.raw))
+	} else {
+		cXPath := C.CString(xpath)
+		xmlC = C.cf_get_data_xml((*C.sr_session_ctx_t)(s.raw), cXPath)
+		C.free(unsafe.Pointer(cXPath))
 	}
-	cXPath := C.CString(xpath)
-	defer C.free(unsafe.Pointer(cXPath))
-	xmlC := C.cf_get_data_xml((*C.sr_session_ctx_t)(s.raw), cXPath)
 	if xmlC == nil {
 		return nil, fmt.Errorf("sysrepoadapter: sr_get_data(%s): internal error", xpath)
 	}
@@ -220,7 +286,6 @@ func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
 	if xmlStr == "" {
 		return &DataNode{XPath: "/", Name: "root"}, nil
 	}
-	// Parse the XML into a DataNode tree.
 	root := parseXMLToDataNode(xmlStr)
 	if root == nil {
 		return &DataNode{XPath: "/", Name: "root"}, nil
