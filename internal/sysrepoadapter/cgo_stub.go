@@ -18,8 +18,8 @@ static char *cf_get_data_xml(sr_session_ctx_t *session, const char *xpath) {
     sr_data_t *data = NULL;
     int rc = sr_get_data(session, xpath, 0, 0, 0, &data);
     if (rc != SR_ERR_OK) {
-        // SR_ERR_NOT_FOUND means no data matched; return empty string
-        // marker (not NULL which means error).
+        // Log the actual error code for debugging
+        fprintf(stderr, "cf_get_data_xml: sr_get_data(%s) rc=%d: %s\n", xpath, rc, sr_strerror(rc));
         if (rc == SR_ERR_NOT_FOUND) {
             return strdup("");
         }
