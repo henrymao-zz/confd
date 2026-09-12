@@ -79,13 +79,31 @@ func runServe(args []string) error {
 		return fmt.Errorf("unknown adapter: %s", cfg.Adapter)
 	}
 
-	// --- plugin specs (from YAML entries + CLI --plugin allowlist) ---
-	specs := filterPluginSpecs(cfg.Plugins.Entries, cfg.Plugins.Names)
+	// --- plugin specs (from YAML entries, or auto-discover from --plugins-dir) ---
+	var specs []yangprov.PluginSpec
+	if len(cfg.Plugins.Entries) > 0 {
+		// Use entries from the YAML config.
+		specs = filterPluginSpecs(cfg.Plugins.Entries, cfg.Plugins.Names)
+	} else if cfg.Plugins.Dir != "" {
+		// No YAML entries; auto-discover .so files from --plugins-dir.
+		phSpecs, err := discoverPlugins(cfg.Plugins.Dir, cfg.Plugins.Names)
+		if err != nil {
+			return fmt.Errorf("discover plugins: %w", err)
+		}
+		for _, ps := range phSpecs {
+			specs = append(specs, yangprov.PluginSpec{Name: ps.Name})
+		}
+	}
 
 	// Convert yangprov.PluginSpec to pluginhost.Spec for the plugin host.
 	var phSpecs []pluginhost.Spec
 	for _, s := range specs {
-		phSpecs = append(phSpecs, pluginhost.Spec{Name: s.Name, Path: filepath.Join(cfg.Plugins.Dir, "libsrplg-"+s.Name+".so")})
+		path := filepath.Join(cfg.Plugins.Dir, "libsrplg-"+s.Name+".so")
+		if s.YangDir != "" {
+			// If from YAML, the .so is in Plugins.Dir.
+			path = filepath.Join(cfg.Plugins.Dir, "libsrplg-"+s.Name+".so")
+		}
+		phSpecs = append(phSpecs, pluginhost.Spec{Name: s.Name, Path: path})
 	}
 
 	// --- plugin host (replaces sysrepo-plugind) ---------------------------
@@ -162,4 +180,28 @@ func filterPluginSpecs(entries []yangprov.PluginSpec, names []string) []yangprov
 		}
 	}
 	return specs
+}
+
+// discoverPlugins scans dir for libsrplg-<name>.so files and returns
+// Specs. If allow is non-empty, only names in the allowlist are included.
+func discoverPlugins(dir string, allow []string) ([]pluginhost.Spec, error) {
+	allowSet := make(map[string]bool, len(allow))
+	for _, n := range allow {
+		allowSet[n] = true
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "libsrplg-*.so"))
+	if err != nil {
+		return nil, err
+	}
+	var specs []pluginhost.Spec
+	for _, m := range matches {
+		base := filepath.Base(m)
+		name := base[len("libsrplg-"):]
+		name = name[:len(name)-len(".so")]
+		if len(allow) > 0 && !allowSet[name] {
+			continue
+		}
+		specs = append(specs, pluginhost.Spec{Name: name, Path: m})
+	}
+	return specs, nil
 }
