@@ -276,9 +276,12 @@ func (c *Cache) rebuildCaps() {
 	for _, n := range names {
 		m := c.modules[n]
 		uri := m.Namespace
+		sep := "?"
 		if m.Revision != "" {
-			uri += "?revision=" + m.Revision
+			uri += sep + "revision=" + m.Revision
+			sep = "&"
 		}
+		uri += sep + "module=" + m.Name
 		caps = append(caps, uri)
 	}
 	c.caps = caps

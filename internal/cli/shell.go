@@ -576,25 +576,32 @@ func (s *Shell) cmdListModules(args []string) error {
 			continue
 		}
 		// YANG module capability URI format:
-		//   <namespace>?revision=<rev>
-		// Extract the module name from the namespace.
-		name := cap
+		//   <namespace>?revision=<rev>&module=<name>
+		// or for modules without revision:
+		//   <namespace>?module=<name>
+		name := ""
 		rev := ""
-		if idx := strings.Index(cap, "?revision="); idx > 0 {
-			name = cap[:idx]
-			rev = cap[idx+len("?revision="):]
+		// Split the query string from the namespace part
+		uriPart := cap
+		queryPart := ""
+		if idx := strings.IndexAny(cap, "?&"); idx > 0 {
+			uriPart = cap[:idx]
+			queryPart = cap[idx:]
 		}
-		// Extract the last path segment after the final ':'
-		// e.g. urn:ietf:params:xml:ns:yang:ietf-system → ietf-system
-		//      http://www.sysrepo.org/yang/sysrepo → sysrepo
-		if idx := strings.LastIndex(name, ":"); idx >= 0 {
-			name = name[idx+1:]
+		// Parse query parameters
+		_ = uriPart // namespace, not needed for display
+		for _, kv := range strings.FieldsFunc(queryPart, func(r rune) bool {
+			return r == '?' || r == '&'
+		}) {
+			if strings.HasPrefix(kv, "revision=") {
+				rev = kv[len("revision="):]
+			}
+			if strings.HasPrefix(kv, "module=") {
+				name = kv[len("module="):]
+			}
 		}
-		// Skip empty names
-		if name == "" || name == "1" || name == "1.0" {
-			// These come from namespace URIs like urn:ietf:params:xml:ns:yang:1
-			// or urn:ietf:params:xml:ns:netconf:default:1.0 — skip them
-			continue
+		if name == "" {
+			continue // not a YANG module capability (no module= param)
 		}
 		modules = append(modules, struct{ name, rev string }{name, rev})
 	}
