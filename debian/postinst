@@ -14,6 +14,17 @@ case "$1" in
         # Set ownership on config directory
         chown -R confd:confd /etc/confd
 
+        # Create /etc/ntp.conf if missing (required by ietf-system plugin
+        # NTP module — it opens /etc/ntp.conf at init and aborts if missing)
+        if [ ! -f /etc/ntp.conf ]; then
+            touch /etc/ntp.conf
+        fi
+
+        # Set fs.protected_regular=0 (required by sysrepo SHM access)
+        sysctl -w fs.protected_regular=0 >/dev/null 2>&1 || true
+        grep -q 'fs.protected_regular=0' /etc/sysctl.conf 2>/dev/null || \
+            echo 'fs.protected_regular=0' >> /etc/sysctl.conf
+
         # Reload ldconfig to pick up bundled shared libraries
         ldconfig
 

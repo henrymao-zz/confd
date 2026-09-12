@@ -75,6 +75,9 @@ func (p *Provisioner) Provision(ctx context.Context, specs []PluginSpec) error {
 				return fmt.Errorf("yangprov: %s: %w", path, err)
 			}
 			moduleName := extractModuleName(path)
+			if moduleName == "" {
+				continue // submodule or unparseable — skip
+			}
 			if installedNames[moduleName] {
 				// Module already installed; enable features.
 				for mod, features := range spec.Features {
@@ -279,6 +282,8 @@ func discoverFeatures(yangDir string, yangFiles []string) map[string][]string {
 }
 
 // extractModuleName reads a .yang file and extracts the module name.
+// Returns empty string for submodules (which cannot be installed
+// standalone — they must be included by their parent module).
 func extractModuleName(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -290,6 +295,10 @@ func extractModuleName(path string) string {
 			name := strings.TrimPrefix(line, "module ")
 			name = strings.TrimSuffix(name, " {")
 			return name
+		}
+		// Skip submodules — they're installed as part of their parent module
+		if strings.HasPrefix(line, "submodule ") {
+			return ""
 		}
 	}
 	return ""
