@@ -11,11 +11,38 @@ package pluginhost
 #include <sysrepo.h>
 #include <dlfcn.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <setjmp.h>
+
+// Thread-local jmp_buf for catching SIGABRT from C++ exceptions.
+static __thread sigjmp_buf cf_jmp_env;
+static __thread int cf_in_plugin_init = 0;
+
+// Signal handler for SIGABRT during plugin init.
+static void cf_abrt_handler(int sig) {
+    if (cf_in_plugin_init) {
+        siglongjmp(cf_jmp_env, 1);
+    }
+    // Not in plugin init — re-raise.
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+// Install the SIGABRT handler (call once at startup).
+static void cf_install_abrt_handler(void) {
+    struct sigaction sa;
+    sa.sa_handler = cf_abrt_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGSEGV, &sa, NULL);
+}
 
 // Load one plugin: dlopen, create a session, call init.
 // Returns 0 on success, negative on error.
-// On success, *handle_out, *sess_out, *priv_out are set.
-// We use void** for all out-params to avoid cgo type friction.
+// Uses setjmp/longjmp to catch SIGABRT/SIGSEGV from C++ exceptions
+// in the plugin init callback, so a crashing plugin doesn't kill
+// the Go process.
 static int cf_plugin_load(const char *path, void *conn,
                           void **handle_out,
                           void **sess_out, void **priv_out) {
@@ -31,7 +58,17 @@ static int cf_plugin_load(const char *path, void *conn,
     if (!init_cb) { sr_session_stop(sess); dlclose(h); return -1; }
 
     void *priv = NULL;
-    rc = init_cb(sess, &priv);
+    cf_in_plugin_init = 1;
+    if (sigsetjmp(cf_jmp_env, 1) == 0) {
+        rc = init_cb(sess, &priv);
+    } else {
+        // SIGABRT/SIGSEGV caught — plugin crashed.
+        cf_in_plugin_init = 0;
+        sr_session_stop(sess);
+        dlclose(h);
+        return -2;
+    }
+    cf_in_plugin_init = 0;
     if (rc != SR_ERR_OK) { sr_session_stop(sess); dlclose(h); return rc; }
 
     *handle_out = h;
@@ -92,6 +129,10 @@ func (h *CGoHost) Start(conn sysrepoadapter.Conn, specs []Spec) error {
 	}
 	h.conn = conn
 
+	// Install signal handler to catch SIGABRT/SIGSEGV from C++ exceptions
+	// in plugin init callbacks.
+	C.cf_install_abrt_handler()
+
 	for _, s := range specs {
 		cPath := C.CString(s.Path)
 		var handle, sess, priv unsafe.Pointer
@@ -99,8 +140,12 @@ func (h *CGoHost) Start(conn sysrepoadapter.Conn, specs []Spec) error {
 			&handle, &sess, &priv))
 		C.free(unsafe.Pointer(cPath))
 		if rc != 0 {
-			// init failure → disable, log, skip (improves on sysrepo-plugind)
-			fmt.Fprintf(os.Stderr, "pluginhost: plugin %q init failed (rc=%d), disabled\n", s.Name, rc)
+			// init failure or crash → disable, log, skip
+			if rc == -2 {
+				fmt.Fprintf(os.Stderr, "pluginhost: plugin %q crashed during init (SIGABRT/SIGSEGV), disabled\n", s.Name)
+			} else {
+				fmt.Fprintf(os.Stderr, "pluginhost: plugin %q init failed (rc=%d), disabled\n", s.Name, rc)
+			}
 			continue
 		}
 		h.loaded = append(h.loaded, cgoPlugin{

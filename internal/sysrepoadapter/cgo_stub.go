@@ -10,6 +10,28 @@ package sysrepoadapter
 #include <libyang/libyang.h>
 #include <sysrepo.h>
 #include <stdlib.h>
+
+// cf_get_data_xml calls sr_get_data to retrieve a libyang data tree,
+// then uses lyd_print_mem to serialize it to XML. Returns the XML string
+// (caller must free with free()) or NULL on error.
+static char *cf_get_data_xml(sr_session_ctx_t *session, const char *xpath) {
+    sr_data_t *data = NULL;
+    int rc = sr_get_data(session, xpath, 0, 0, 0, &data);
+    if (rc != SR_ERR_OK) {
+        return NULL;
+    }
+    if (data == NULL || data->tree == NULL) {
+        if (data) sr_release_data(data);
+        return NULL;
+    }
+    char *xml = NULL;
+    rc = lyd_print_mem(&xml, data->tree, LYD_XML, 0);
+    sr_release_data(data);
+    if (rc != LY_SUCCESS) {
+        return NULL;
+    }
+    return xml;
+}
 */
 import "C"
 
@@ -172,28 +194,26 @@ func (s *cgoSession) SwitchDS(ds Datastore) error {
 // CurrentDS returns the currently active datastore.
 func (s *cgoSession) CurrentDS() Datastore { return s.ds }
 
-// Get retrieves data at the given XPath. An empty or "/" XPath returns
-// the whole datastore root (as a flat list of top-level values).
+// Get retrieves data at the given XPath using sr_get_data (which returns
+// a libyang tree) and serializes it to XML via lyd_print_mem. The XML is
+// then parsed into a DataNode tree by the caller's data encoder.
 func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
+	if xpath == "" {
+		xpath = "/"
+	}
 	cXPath := C.CString(xpath)
 	defer C.free(unsafe.Pointer(cXPath))
-	var vals *C.sr_val_t
-	var count C.size_t
-	rc := C.sr_get_items((*C.sr_session_ctx_t)(s.raw), cXPath, 0, 0, &vals, &count)
-	if rc != C.SR_ERR_OK {
-		return nil, fmt.Errorf("sysrepoadapter: sr_get_items(%s): %s", xpath, C.GoString(C.sr_strerror(rc)))
-	}
-	defer C.sr_free_values(vals, count)
-	n := int(count)
-	if n == 0 {
+	xmlC := C.cf_get_data_xml((*C.sr_session_ctx_t)(s.raw), cXPath)
+	if xmlC == nil {
 		return nil, ErrNotFound
 	}
-	root := &DataNode{XPath: "/", Name: "root"}
-	// TODO: build DataNode tree from the sr_val_t array. Each sr_val_t
-	// has an xpath + data union; we need to parse the xpaths to build
-	// the tree structure. For now we return an empty root; the full
-	// conversion will be implemented when the sysrepo cgo path is
-	// tested against a live sysrepod.
+	xmlStr := C.GoString(xmlC)
+	C.free(unsafe.Pointer(xmlC))
+	// Parse the XML into a DataNode tree.
+	root := parseXMLToDataNode(xmlStr)
+	if root == nil {
+		return &DataNode{XPath: "/", Name: "root"}, nil
+	}
 	return root, nil
 }
 
