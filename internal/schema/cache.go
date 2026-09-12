@@ -275,6 +275,9 @@ func (c *Cache) rebuildCaps() {
 	caps := make([]string, 0, len(names))
 	for _, n := range names {
 		m := c.modules[n]
+		if m == nil {
+			continue
+		}
 		uri := m.Namespace
 		sep := "?"
 		if m.Revision != "" {
