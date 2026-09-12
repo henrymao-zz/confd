@@ -18,11 +18,16 @@ static char *cf_get_data_xml(sr_session_ctx_t *session, const char *xpath) {
     sr_data_t *data = NULL;
     int rc = sr_get_data(session, xpath, 0, 0, 0, &data);
     if (rc != SR_ERR_OK) {
+        // SR_ERR_NOT_FOUND means no data matched; return empty string
+        // marker (not NULL which means error).
+        if (rc == SR_ERR_NOT_FOUND) {
+            return strdup("");
+        }
         return NULL;
     }
     if (data == NULL || data->tree == NULL) {
         if (data) sr_release_data(data);
-        return NULL;
+        return strdup("");
     }
     char *xml = NULL;
     rc = lyd_print_mem(&xml, data->tree, LYD_XML, 0);
@@ -205,10 +210,13 @@ func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
 	defer C.free(unsafe.Pointer(cXPath))
 	xmlC := C.cf_get_data_xml((*C.sr_session_ctx_t)(s.raw), cXPath)
 	if xmlC == nil {
-		return nil, ErrNotFound
+		return nil, fmt.Errorf("sysrepoadapter: sr_get_data(%s): internal error", xpath)
 	}
 	xmlStr := C.GoString(xmlC)
 	C.free(unsafe.Pointer(xmlC))
+	if xmlStr == "" {
+		return &DataNode{XPath: "/", Name: "root"}, nil
+	}
 	// Parse the XML into a DataNode tree.
 	root := parseXMLToDataNode(xmlStr)
 	if root == nil {
