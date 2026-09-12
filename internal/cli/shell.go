@@ -526,11 +526,12 @@ func (s *Shell) execAndPrint(ctx context.Context, op any) error {
 	return nil
 }
 
-// printXML pretty-prints XML if possible, otherwise prints as-is.
+// printXML pretty-prints XML by re-encoding with indentation.
 func printXML(data []byte) {
 	var buf strings.Builder
 	dec := xml.NewDecoder(strings.NewReader(string(data)))
 	enc := xml.NewEncoder(&buf)
+	enc.Indent("", "  ")
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -544,9 +545,7 @@ func printXML(data []byte) {
 	}
 	enc.Flush()
 	if buf.Len() > 0 {
-		// Add newlines between elements for readability.
-		out := strings.ReplaceAll(buf.String(), "><", ">\n<")
-		fmt.Println(out)
+		fmt.Println(buf.String())
 		return
 	}
 	fmt.Println(string(data))
