@@ -57,6 +57,7 @@ func (p *Provisioner) Provision(ctx context.Context, specs []PluginSpec) error {
 			}
 		}
 	}
+	slog.Info("yangprov: Provision starting", "specs", len(specs), "installed", len(installedNames))
 
 	// Collect all modules to install across all specs, with their
 	// search dirs and features.

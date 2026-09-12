@@ -166,12 +166,17 @@ Run 'confd help' for more information.`)
 }
 
 func runServe(args []string) error {
-	// Start with defaults, then load YAML config (if --config or
-	// /etc/confd/confd.yaml exists), then apply CLI flag overrides.
-	cfg, err := config.FromFlags(config.Default(), args)
-	if err != nil {
-		return err
-	}
+// Start with defaults, load default YAML config if it exists,
+// then apply CLI flag overrides.
+baseCfg := config.Default()
+defaultCfg, err := config.LoadConfig("") // loads /etc/confd/confd.yaml if it exists
+if err == nil {
+	baseCfg = defaultCfg
+}
+cfg, err := config.FromFlags(baseCfg, args)
+if err != nil {
+	return err
+}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	var adapter sysrepoadapter.Adapter
