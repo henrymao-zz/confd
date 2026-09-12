@@ -43,10 +43,14 @@ func New(conn sysrepoadapter.Conn) *Provisioner {
 // to handle YANG import dependencies (modules that depend on other
 // modules being installed first).
 func (p *Provisioner) Provision(ctx context.Context, specs []PluginSpec) error {
-	installed, err := p.conn.GetModuleInfo(ctx)
-	if err != nil {
-		return fmt.Errorf("yangprov: get module info: %w", err)
-	}
+	// GetModuleInfo may crash on a fresh sysrepo instance (segfault
+	// in sr_get_module_info before internal modules are loaded).
+	// Recover from panics and treat as "no modules installed yet".
+	var installed []sysrepoadapter.ModuleInfo
+	func() {
+		defer func() { _ = recover() }()
+		installed, _ = p.conn.GetModuleInfo(ctx)
+	}()
 	installedNames := make(map[string]bool, len(installed))
 	for _, m := range installed {
 		installedNames[m.Name] = true

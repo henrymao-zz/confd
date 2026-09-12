@@ -155,7 +155,8 @@ func (c *cgoConn) ListModules(ctx context.Context) ([]ModuleInfo, error) {
 
 // GetModuleInfo returns the list of YANG modules installed in sysrepo.
 // It parses the sysrepo internal data tree (/sysrepo:sysrepo-modules/module)
-// to extract module names.
+// to extract module names. If the sysrepo internal data is not available
+// (e.g. on first run), returns empty list without error.
 func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
 	var data *C.sr_data_t
 	rc := C.sr_get_module_info((*C.sr_conn_ctx_t)(c.raw), &data)
@@ -173,8 +174,8 @@ func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
 	var xmlC *C.char
 	lyRc := C.lyd_print_mem(&xmlC, data.tree, C.LYD_XML, 0)
 	C.sr_release_data(data)
-	if lyRc != C.LY_SUCCESS {
-		return nil, fmt.Errorf("sysrepoadapter: lyd_print_mem failed")
+	if lyRc != C.LY_SUCCESS || xmlC == nil {
+		return nil, nil
 	}
 	xmlStr := C.GoString(xmlC)
 	C.free(unsafe.Pointer(xmlC))
@@ -222,6 +223,7 @@ func (c *cgoConn) GetModuleInfo(ctx context.Context) ([]ModuleInfo, error) {
 		}
 	}
 	return modules, nil
+}
 }
 
 // InstallModule installs a YANG module into sysrepo.
