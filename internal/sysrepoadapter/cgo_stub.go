@@ -253,7 +253,12 @@ func (c *cgoConn) InstallModule(ctx context.Context, path, searchDirs string, fe
 	}
 	rc := C.sr_install_module((*C.sr_conn_ctx_t)(c.raw), cPath, cSearchDirs, cFeatures)
 	if rc != C.SR_ERR_OK {
-		return fmt.Errorf("sysrepoadapter: sr_install_module: %s", C.GoString(C.sr_strerror(rc)))
+		errMsg := C.GoString(C.sr_strerror(rc))
+		// Module already installed — not an error (idempotent).
+		if strings.Contains(errMsg, "already exists") || strings.Contains(errMsg, "Exists") || rc == C.SR_ERR_EXISTS {
+			return nil
+		}
+		return fmt.Errorf("sysrepoadapter: sr_install_module: %s", errMsg)
 	}
 	return nil
 }
@@ -271,9 +276,14 @@ func (c *cgoConn) SetModuleFeature(ctx context.Context, module, feature string, 
 		rc = C.sr_disable_module_feature((*C.sr_conn_ctx_t)(c.raw), cMod, cFeat)
 	}
 	if rc != C.SR_ERR_OK {
+		errMsg := C.GoString(C.sr_strerror(rc))
+		// Feature already in desired state — not an error.
+		if strings.Contains(errMsg, "already exists") || rc == C.SR_ERR_EXISTS {
+			return nil
+		}
 		return fmt.Errorf("sysrepoadapter: sr_%s_module_feature: %s",
 			map[bool]string{true: "enable", false: "disable"}[enable],
-			C.GoString(C.sr_strerror(rc)))
+			errMsg)
 	}
 	return nil
 }
