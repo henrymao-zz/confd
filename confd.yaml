@@ -12,7 +12,7 @@
 ssh:
   bind: "0.0.0.0:830"
   host_key: ""            # path to SSH host key (empty = ephemeral ed25519)
-  password: ""           # if set, password auth is enabled
+  password: "confd"         # if set, password auth is enabled
 
 # Sysrepo backend
 adapter: sysrepo          # "sysrepo" (cgo, default) or "mock" (in-memory, for tests)
