@@ -238,9 +238,10 @@ func AutoDiscover(pluginsDir string) []PluginSpec {
 			continue
 		}
 		spec := PluginSpec{
-			Name:    pluginName,
-			YangDir: yangDir,
-			Modules: modules,
+			Name:       pluginName,
+			YangDir:    yangDir,
+			Modules:    modules,
+			ImportDirs: []string{yangDir},
 		}
 		// Parse YANG files to discover features
 		features := discoverFeatures(yangDir, yangFiles)
