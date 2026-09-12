@@ -108,7 +108,18 @@ func (c *Cache) LoadFilesTolerant(paths ...string) error {
 		if c.modules[name] != nil {
 			continue
 		}
-		entry := yang.ToEntry(mod)
+		// Recover from panics in ToEntry (goyang can panic on
+		// broken imports/groupings in some YANG files).
+		var entry *yang.Entry
+		func() {
+			defer func() {
+				_ = recover()
+			}()
+			entry = yang.ToEntry(mod)
+		}()
+		if entry == nil {
+			continue
+		}
 		srcInfo := sources[name]
 		info := &ModuleInfo{
 			Name:        name,
