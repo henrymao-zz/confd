@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"nemith.io/netconf"
 	nssh "nemith.io/netconf/transport/ssh"
@@ -21,26 +22,55 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// Shell is the interactive NETCONF client shell.
-type Shell struct {
-	session   *netconf.Session
-	transport *nssh.Transport
-	msgID     atomic.Uint64
-	reader    *bufio.Reader
+// ConnectOptions configures auto-connect at shell launch.
+type ConnectOptions struct {
+	Addr     string        // target address (host:port)
+	User     string        // SSH username
+	Password string        // SSH password
+	Timeout  time.Duration // connect timeout
 }
 
-// New returns a new Shell reading from os.Stdin.
-func New() *Shell {
-	return &Shell{
+// Shell is the interactive NETCONF client shell.
+type Shell struct {
+	session     *netconf.Session
+	transport   *nssh.Transport
+	msgID       atomic.Uint64
+	reader      *bufio.Reader
+	autoConnect *ConnectOptions
+}
+
+// New returns a new Shell reading from os.Stdin. If opts is non-empty
+// and opts[0].Addr is set, the shell will attempt to auto-connect at
+// launch.
+func New(opts ...ConnectOptions) *Shell {
+	s := &Shell{
 		reader: bufio.NewReader(os.Stdin),
 	}
+	if len(opts) > 0 && opts[0].Addr != "" {
+		o := opts[0]
+		if o.Timeout == 0 {
+			o.Timeout = 2 * time.Second
+		}
+		if o.User == "" {
+			o.User = "confd"
+		}
+		s.autoConnect = &o
+	}
+	return s
 }
 
 // Run starts the interactive prompt loop. It blocks until the user
 // types "quit" or "exit", or until EOF on stdin.
 func (s *Shell) Run() error {
 	fmt.Println("confd interactive NETCONF shell")
-	fmt.Println("Type 'help' for available commands, 'quit' to exit.")
+	if s.autoConnect != nil {
+		if err := s.tryAutoConnect(); err != nil {
+			fmt.Printf("(auto-connect to %s failed: %v)\n", s.autoConnect.Addr, err)
+			fmt.Println("Run 'confd serve' to start the server, or use 'connect <addr>'.")
+		}
+	} else {
+		fmt.Println("Type 'help' for available commands, 'quit' to exit.")
+	}
 	for {
 		prompt := "confd> "
 		if s.session != nil {
@@ -203,6 +233,33 @@ func (s *Shell) cmdConnect(args []string) error {
 	tr, err := nssh.Dial(context.Background(), "tcp", addr, sshCfg)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
+	}
+	sess, err := netconf.NewSession(tr)
+	if err != nil {
+		_ = tr.Close()
+		return fmt.Errorf("hello: %w", err)
+	}
+	s.session = sess
+	s.transport = tr
+	fmt.Printf("Session %d established\n", sess.SessionID())
+	return nil
+}
+
+// tryAutoConnect attempts to connect to the auto-connect target.
+func (s *Shell) tryAutoConnect() error {
+	o := s.autoConnect
+	fmt.Printf("Connecting to %s...\n", o.Addr)
+	sshCfg := &gossh.ClientConfig{
+		User:            o.User,
+		Auth:            []gossh.AuthMethod{gossh.Password(o.Password)},
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		Timeout:         o.Timeout,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), o.Timeout)
+	defer cancel()
+	tr, err := nssh.Dial(ctx, "tcp", o.Addr, sshCfg)
+	if err != nil {
+		return err
 	}
 	sess, err := netconf.NewSession(tr)
 	if err != nil {

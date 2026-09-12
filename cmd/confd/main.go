@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/example/confd/internal/cli"
 	"github.com/example/confd/internal/config"
@@ -21,8 +23,13 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		// No subcommand → interactive CLI shell
-		if err := cli.New().Run(); err != nil {
+		// No subcommand → interactive CLI shell with auto-connect
+		opts, err := parseShellArgs(os.Args[1:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "confd:", err)
+			os.Exit(1)
+		}
+		if err := cli.New(opts).Run(); err != nil {
 			fmt.Fprintln(os.Stderr, "confd:", err)
 			os.Exit(1)
 		}
@@ -49,13 +56,111 @@ func main() {
 	}
 }
 
+// parseShellArgs parses CLI flags for the interactive shell (no subcommand).
+// It loads confd.yaml to determine the default connect address and password,
+// then applies --connect, --user, --password, --no-connect, and --config overrides.
+func parseShellArgs(args []string) (cli.ConnectOptions, error) {
+	noConnect := false
+	connectAddr := ""
+	user := ""
+	password := ""
+	configPath := ""
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--no-connect":
+			noConnect = true
+		case strings.HasPrefix(a, "--connect="):
+			connectAddr = strings.TrimPrefix(a, "--connect=")
+		case a == "--connect" && i+1 < len(args):
+			i++
+			connectAddr = args[i]
+		case strings.HasPrefix(a, "--user="):
+			user = strings.TrimPrefix(a, "--user=")
+		case a == "--user" && i+1 < len(args):
+			i++
+			user = args[i]
+		case strings.HasPrefix(a, "--password="):
+			password = strings.TrimPrefix(a, "--password=")
+		case strings.HasPrefix(a, "--config="):
+			configPath = strings.TrimPrefix(a, "--config=")
+		case a == "--config" && i+1 < len(args):
+			i++
+			configPath = args[i]
+		case a == "-h", a == "--help":
+			printShellUsage()
+			os.Exit(0)
+		default:
+			// Ignore unknown args silently for forward compatibility
+		}
+	}
+
+	if noConnect {
+		return cli.ConnectOptions{}, nil
+	}
+
+	// Load config for defaults
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return cli.ConnectOptions{}, err
+	}
+
+	if connectAddr == "" {
+		connectAddr = normalizeLocal(cfg.SSH.Bind)
+	}
+	if password == "" {
+		password = cfg.SSH.Password
+	}
+
+	return cli.ConnectOptions{
+		Addr:     connectAddr,
+		User:     user,
+		Password: password,
+		Timeout:  2 * time.Second,
+	}, nil
+}
+
+// normalizeLocal converts a bind address like 0.0.0.0:830 to 127.0.0.1:830
+// so the shell connects to localhost instead of all-interfaces.
+func normalizeLocal(addr string) string {
+	if strings.HasPrefix(addr, "0.0.0.0:") {
+		return "127.0.0.1:" + strings.TrimPrefix(addr, "0.0.0.0:")
+	}
+	if strings.HasPrefix(addr, ":::") {
+		return "127.0.0.1:" + strings.TrimPrefix(addr, ":::")
+	}
+	return addr
+}
+
+func printShellUsage() {
+	fmt.Fprintln(os.Stderr, `confd - Interactive NETCONF CLI shell
+
+Usage:
+  confd [flags]              Interactive shell (auto-connects to local server)
+
+Flags:
+  --connect=<addr>     Override auto-connect target (default: from confd.yaml ssh.bind)
+  --user=<name>        SSH username (default: confd)
+  --password=<pw>      SSH password (default: from confd.yaml ssh.password)
+  --no-connect         Skip auto-connect, start unconnected
+  --config=<path>      Path to YAML config (default: /etc/confd/confd.yaml)`)
+}
+
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `confd - Go-based NETCONF server and CLI
 
 Usage:
-  confd                         Interactive NETCONF CLI shell
-  confd serve [flags]           Start the NETCONF server
-  confd schema-list [flags]     List loaded YANG modules
+  confd [flags]             Interactive CLI shell (auto-connects to local server)
+  confd serve [flags]        Start the NETCONF server
+  confd schema-list [flags]  List loaded YANG modules
+
+Shell flags:
+  --connect=<addr>     Override auto-connect target
+  --user=<name>        SSH username (default: confd)
+  --password=<pw>      SSH password
+  --no-connect         Skip auto-connect
+  --config=<path>      Path to YAML config file
 
 Run 'confd help' for more information.`)
 }
