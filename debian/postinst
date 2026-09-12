@@ -1,0 +1,29 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Create confd user/group if they don't exist
+        if ! getent group confd >/dev/null 2>&1; then
+            addgroup --system confd
+        fi
+        if ! getent passwd confd >/dev/null 2>&1; then
+            adduser --system --ingroup confd --home /etc/confd --no-create-home confd
+        fi
+
+        # Set ownership on config directory
+        chown -R confd:confd /etc/confd
+
+        # Reload ldconfig to pick up bundled shared libraries
+        ldconfig
+
+        # Reload systemd to pick up the service file
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload || true
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#

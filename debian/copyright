@@ -1,0 +1,9 @@
+Format: https
+Files-Excluded:
+ src/libyang/build
+ src/sysrepo/build
+ src/libyang-cpp/build
+ src/sysrepo-cpp/build
+ src/umgmt/build
+ src/sysrepo-plugins/build
+

@@ -1,0 +1,46 @@
+Source: confd
+Section: net
+Priority: optional
+Maintainer: Henry Mao <henry.mao@canonical.com>
+Build-Depends: debhelper-compat (= 13),
+ golang-go,
+ cmake,
+ g++,
+ pkg-config,
+ libpcre2-dev,
+ libnl-3-dev,
+ libnl-route-3-dev,
+ libnl-genl-3-dev,
+ libnl-nf-3-dev,
+ libsystemd-dev,
+ libsdbus-c++-dev,
+ libnftables-dev,
+ libsensors-dev,
+ libproc2-dev,
+ nlohmann-json3-dev,
+ doctest-dev,
+ git
+Standards-Version: 4.7.0
+Homepage: https://github.com/henrymao-zz/confd
+
+Package: confd
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Description: Go-based NETCONF server backed by sysrepo
+ confd is a NETCONF server that uses sysrepo as its datastore backend.
+ It provides RFC 6241 compliant NETCONF operations (get, get-config,
+ edit-config, lock, unlock, commit, discard-changes, validate, get-schema)
+ over SSH, with an interactive CLI shell for management.
+ .
+ Features:
+  * goyang-based YANG schema cache with auto-discovery from sysrepo
+  * Telekom sysrepo-plugins hosting (dlopen-based, crash-safe)
+  * Interactive CLI shell with YAML config rendering (show running/startup)
+  * Auto-connect to local server at launch
+  * CIDR notation for IP addresses in YAML output
+
+Package: confd-dev
+Architecture: all
+Depends: confd (= ${binary:Version}), ${misc:Depends}
+Description: Development files for confd
+ Headers and development files for confd plugin development.

@@ -1,0 +1,9 @@
+confd (0.1.0-1) noble; urgency=medium
+
+  * Initial Debian packaging.
+  * Go-based NETCONF server backed by sysrepo.
+  * Includes libyang v5.8.6, sysrepo v5.1.0, and Telekom sysrepo-plugins.
+  * Interactive CLI shell with YAML config rendering.
+  * Auto-connect to local server at launch.
+
+ -- Henry Mao <henry.mao@canonical.com>  Sat, 12 Sep 2026 18:00:00 +0800

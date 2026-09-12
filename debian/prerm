@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop confd.service || true
+        systemctl disable confd.service || true
+    fi
+fi
+
+#DEBHELPER#
