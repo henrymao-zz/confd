@@ -198,8 +198,8 @@ func (s *cgoSession) CurrentDS() Datastore { return s.ds }
 // a libyang tree) and serializes it to XML via lyd_print_mem. The XML is
 // then parsed into a DataNode tree by the caller's data encoder.
 func (s *cgoSession) Get(ctx context.Context, xpath string) (*DataNode, error) {
-	if xpath == "" {
-		xpath = "/"
+	if xpath == "" || xpath == "/" {
+		xpath = "/*"
 	}
 	cXPath := C.CString(xpath)
 	defer C.free(unsafe.Pointer(cXPath))
