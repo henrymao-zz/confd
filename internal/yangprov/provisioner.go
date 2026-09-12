@@ -43,17 +43,19 @@ func New(conn sysrepoadapter.Conn) *Provisioner {
 // to handle YANG import dependencies (modules that depend on other
 // modules being installed first).
 func (p *Provisioner) Provision(ctx context.Context, specs []PluginSpec) error {
-	// GetModuleInfo may crash on a fresh sysrepo instance (segfault
-	// in sr_get_module_info before internal modules are loaded).
-	// Recover from panics and treat as "no modules installed yet".
-	var installed []sysrepoadapter.ModuleInfo
-	func() {
-		defer func() { _ = recover() }()
-		installed, _ = p.conn.GetModuleInfo(ctx)
-	}()
-	installedNames := make(map[string]bool, len(installed))
-	for _, m := range installed {
-		installedNames[m.Name] = true
+	// Check installed modules by looking for startup data files in
+	// /etc/sysrepo/data/. We can't use sr_get_module_info because it
+	// crashes in sysrepo v5.1.0.
+	installedNames := make(map[string]bool)
+	dataDir := "/etc/sysrepo/data"
+	if entries, err := os.ReadDir(dataDir); err == nil {
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasSuffix(name, ".startup") {
+				modName := strings.TrimSuffix(name, ".startup")
+				installedNames[modName] = true
+			}
+		}
 	}
 
 	// Collect all modules to install across all specs, with their
