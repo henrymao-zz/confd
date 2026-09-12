@@ -4,10 +4,10 @@
 package operations
 
 import (
+	"os"
 	"context"
 	"encoding/xml"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/example/confd/internal/data"
@@ -106,11 +106,10 @@ func BuildHandlers(deps Deps, sessionID uint64, peerUser string) map[string]tran
 
 	wrap := func(opName string) transport.Handler {
 		return func(msgID string, innerXML []byte) (any, error) {
+			os.WriteFile("/tmp/confd-debug.log", []byte("wrap called: op="+opName+" msgID="+msgID+"\n"), 0644)
 			rpcXML := fmt.Sprintf(`<rpc message-id="%s" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">%s</rpc>`,
 				msgID, string(innerXML))
-			slog.Info("DEBUG wrap", "opName", opName, "rpcXML", rpcXML)
 			out := d.Handle(rctx, []byte(rpcXML))
-			slog.Info("DEBUG wrap out", "out", string(out))
 			return extractRPCReplyInner(out), nil
 		}
 	}
