@@ -12,6 +12,7 @@ import (
 
 	"github.com/example/confd/internal/schema"
 	"github.com/example/confd/internal/sysrepoadapter"
+	"github.com/openconfig/goyang/pkg/yang"
 )
 
 // PluginSpec describes one plugin's YANG modules and features.
@@ -99,13 +100,26 @@ func (p *Provisioner) LoadCache(cache *schema.Cache, specs []PluginSpec) error {
 }
 
 // AutoDiscover walks a plugins directory and returns PluginSpecs for
-// each subdirectory that contains a yang/ folder. Features are not
-// discovered (they require per-plugin knowledge that only the manifest
-// can provide).
+// each subdirectory that contains a yang/ folder. Features are discovered
+// by parsing the YANG files with goyang — every `feature` declaration
+// found is enabled by default.
 func AutoDiscover(pluginsDir string) []PluginSpec {
+	// Look for yang/ subdirectories directly under pluginsDir,
+	// or for subdirectories of pluginsDir that contain a yang/ folder.
 	yangDirs, err := filepath.Glob(filepath.Join(pluginsDir, "*/yang"))
-	if err != nil {
-		return nil
+	if err != nil || len(yangDirs) == 0 {
+		// Try pluginsDir/yang directly (flat layout)
+		yangDir := filepath.Join(pluginsDir, "yang")
+		if fi, e := os.Stat(yangDir); e == nil && fi.IsDir() {
+			yangDirs = []string{yangDir}
+		}
+	}
+	if len(yangDirs) == 0 {
+		// Try pluginsDir itself if it contains .yang files
+		yangFiles, _ := filepath.Glob(filepath.Join(pluginsDir, "*.yang"))
+		if len(yangFiles) > 0 {
+			yangDirs = []string{pluginsDir}
+		}
 	}
 	var specs []PluginSpec
 	for _, yangDir := range yangDirs {
@@ -118,13 +132,48 @@ func AutoDiscover(pluginsDir string) []PluginSpec {
 		if len(modules) == 0 {
 			continue
 		}
-		specs = append(specs, PluginSpec{
+		spec := PluginSpec{
 			Name:    pluginName,
 			YangDir: yangDir,
 			Modules: modules,
-		})
+		}
+		// Parse YANG files to discover features
+		features := discoverFeatures(yangDir, yangFiles)
+		if len(features) > 0 {
+			spec.Features = features
+		}
+		specs = append(specs, spec)
 	}
 	return specs
+}
+
+// discoverFeatures parses YANG files with goyang and returns a map
+// of module name → feature names declared in the module.
+func discoverFeatures(yangDir string, yangFiles []string) map[string][]string {
+	ms := yang.NewModules()
+	for _, f := range yangFiles {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		abs, _ := filepath.Abs(f)
+		_ = ms.Parse(string(data), abs)
+	}
+	_ = ms.Process()
+
+	result := map[string][]string{}
+	for _, mod := range ms.Modules {
+		if mod == nil || mod.Kind() != "module" {
+			continue
+		}
+		for _, feat := range mod.Feature {
+			result[mod.Name] = append(result[mod.Name], feat.Name)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // extractModuleName reads a .yang file and extracts the module name.

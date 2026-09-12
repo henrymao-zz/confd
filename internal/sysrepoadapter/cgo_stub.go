@@ -202,13 +202,21 @@ func (c *cgoConn) InstallModule(ctx context.Context, path, searchDirs string, fe
 
 // SetModuleFeature enables or disables a feature on an installed module.
 func (c *cgoConn) SetModuleFeature(ctx context.Context, module, feature string, enable bool) error {
-	// sysrepo doesn't have a dedicated sr_set_module_feature; features are
-	// enabled at install time via sr_install_module's features parameter.
-	// For already-installed modules, re-installing with the feature enabled
-	// is the standard approach. We call sr_install_module with the module
-	// path (which sysrepo resolves from its installed location) and the
-	// features list.
-	// TODO: find the module's on-disk path from sr_get_module_info.
+	cMod := C.CString(module)
+	cFeat := C.CString(feature)
+	defer C.free(unsafe.Pointer(cMod))
+	defer C.free(unsafe.Pointer(cFeat))
+	var rc C.int
+	if enable {
+		rc = C.sr_enable_module_feature((*C.sr_conn_ctx_t)(c.raw), cMod, cFeat)
+	} else {
+		rc = C.sr_disable_module_feature((*C.sr_conn_ctx_t)(c.raw), cMod, cFeat)
+	}
+	if rc != C.SR_ERR_OK {
+		return fmt.Errorf("sysrepoadapter: sr_%s_module_feature: %s",
+			map[bool]string{true: "enable", false: "disable"}[enable],
+			C.GoString(C.sr_strerror(rc)))
+	}
 	return nil
 }
 

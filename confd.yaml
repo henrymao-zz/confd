@@ -28,7 +28,7 @@ plugins:
   entries:
     # --- ietf-system ---
     - name: ietf-system
-      yang_dir: /usr/lib/confd/yang/ietf-system
+      yang_dir: /usr/lib/confd/yang/ietf-system-plugin
       modules:
         - iana-crypt-hash@2014-08-06.yang
         - ietf-system@2014-08-06.yang
@@ -41,7 +41,7 @@ plugins:
 
     # --- ietf-interfaces ---
     - name: ietf-interfaces
-      yang_dir: /usr/lib/confd/yang/ietf-interfaces
+      yang_dir: /usr/lib/confd/yang/ietf-interfaces-plugin
       modules:
         - iana-if-type@2017-01-19.yang
         - ieee802-dot1q-types.yang
@@ -59,7 +59,7 @@ plugins:
 
     # --- ietf-routing ---
     - name: ietf-routing
-      yang_dir: /usr/lib/confd/yang/ietf-routing
+      yang_dir: /usr/lib/confd/yang/ietf-routing-plugin
       modules:
         - ietf-ipv4-unicast-routing@2018-03-13.yang
         - ietf-ipv6-router-advertisements@2018-03-13.yang
@@ -70,7 +70,7 @@ plugins:
 
     # --- ieee802-dot1q-bridge ---
     - name: ieee802-dot1q-bridge
-      yang_dir: /usr/lib/confd/yang/ieee802-dot1q-bridge
+      yang_dir: /usr/lib/confd/yang/ieee802-dot1q-bridge-plugin
       modules:
         - ieee802-dot1q-bridge.yang
         - ieee802-dot1q-tpmr.yang
@@ -81,7 +81,7 @@ plugins:
 
     # --- ietf-access-control-list ---
     - name: ietf-access-control-list
-      yang_dir: /usr/lib/confd/yang/ietf-access-control-list
+      yang_dir: /usr/lib/confd/yang/ietf-access-control-list-plugin
       modules:
         - ietf-access-control-list@2019-03-04.yang
         - ietf-ethertypes@2019-03-04.yang
@@ -100,7 +100,7 @@ plugins:
 
     # --- ietf-hardware ---
     - name: ietf-hardware
-      yang_dir: /usr/lib/confd/yang/ietf-hardware
+      yang_dir: /usr/lib/confd/yang/ietf-hardware-plugin
       modules:
         - iana-hardware.yang
         - ietf-hardware.yang
@@ -114,7 +114,7 @@ plugins:
     # Disabled by default (requires libprocps on Ubuntu 26.04).
     # Uncomment to enable:
     # - name: os-metrics
-    #   yang_dir: /usr/lib/confd/yang/os-metrics
+    #   yang_dir: /usr/lib/confd/yang/os-metrics-plugin
     #   modules:
     #     - os-metrics.yang
     #   features:
