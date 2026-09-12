@@ -174,14 +174,6 @@ func runServe(args []string) error {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	// Override sysrepo repository path if configured.
-	if cfg.SysrepoDir != "" {
-		if err := os.Setenv("SYSREPO_REPOSITORY_PATH", cfg.SysrepoDir); err != nil {
-			return fmt.Errorf("set SYSREPO_REPOSITORY_PATH: %w", err)
-		}
-		logger.Info("sysrepo repository path overridden", "dir", cfg.SysrepoDir)
-	}
-
 	var adapter sysrepoadapter.Adapter
 	switch cfg.Adapter {
 	case "sysrepo":
