@@ -33,20 +33,23 @@ func (h *getConfigHandler) Handle(ctx rpc.Context, msg *rpc.Message, _, _ string
 	if err != nil {
 		return nil, rpc.NewError(rpc.TagInvalidValue, err.Error())
 	}
-	sess := h.deps.Session
-	if sess != nil {
-		if err := sess.SwitchDS(ds); err != nil {
-			return nil, rpc.AsError(err)
-		}
-		body, err := applyFilter(context.Background(), h.deps.Encoder, sess, ds, p.Filter)
-		if err != nil {
-			return nil, err
-		}
-		return &rpc.Reply{MessageID: msg.MessageID, Body: dataWrap(body)}, nil
-	}
-	// Fallback: open a short-lived session (backward compat with per-RPC mode).
+	// Always open a fresh session for get-config to ensure we see data
+	// written by plugins (the per-NETCONF-session dsSession may have
+	// been created before plugins ran).
 	s, err := h.deps.Conn.OpenSession(context.Background(), ctx.PeerUser)
 	if err != nil {
+		// Fallback to dsSession if available
+		sess := h.deps.Session
+		if sess != nil {
+			if err := sess.SwitchDS(ds); err != nil {
+				return nil, rpc.AsError(err)
+			}
+			body, err := applyFilter(context.Background(), h.deps.Encoder, sess, ds, p.Filter)
+			if err != nil {
+				return nil, err
+			}
+			return &rpc.Reply{MessageID: msg.MessageID, Body: dataWrap(body)}, nil
+		}
 		return nil, rpc.AsError(err)
 	}
 	defer s.Close()
