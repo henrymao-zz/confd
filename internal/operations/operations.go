@@ -144,8 +144,9 @@ func extractRPCReplyInner(reply []byte) []byte {
 
 // filterSpec is the parsed <filter> element.
 type filterSpec struct {
-	Type    string `xml:"type,attr"`
-	Inner   []byte `xml:",innerxml"`
+	Type   string `xml:"type,attr"`
+	Select string `xml:"select,attr"`
+	Inner  []byte `xml:",innerxml"`
 }
 
 func applyFilter(ctx context.Context, enc *data.Encoder, sess sysrepoadapter.Session, ds sysrepoadapter.Datastore, f *filterSpec) ([]byte, error) {
@@ -160,7 +161,10 @@ func applyFilter(ctx context.Context, enc *data.Encoder, sess sysrepoadapter.Ses
 	case "", "subtree":
 		return applySubtreeFilter(enc, root, f.Inner)
 	case "xpath":
-		xpath := strings.TrimSpace(string(f.Inner))
+		xpath := strings.TrimSpace(f.Select)
+		if xpath == "" {
+			xpath = strings.TrimSpace(string(f.Inner))
+		}
 		node, err := sess.Get(ctx, xpath)
 		if err != nil {
 			return nil, err
