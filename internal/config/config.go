@@ -20,6 +20,9 @@ type Config struct {
 	Adapter string `yaml:"adapter"`
 	// SysrepoSocket is the path to the sysrepo socket (for the sysrepo adapter).
 	SysrepoSocket string `yaml:"sysrepo_socket"`
+	// SysrepoDir is the repository path for sysrepo persistent files.
+	// If set, overrides the default /etc/sysrepo via SYSREPO_REPOSITORY_PATH env.
+	SysrepoDir string `yaml:"sysrepo_dir"`
 
 	// Plugins configures the plugin host and YANG provisioning.
 	// Plugin .so files are discovered from Dir; YANG modules and features
@@ -112,6 +115,8 @@ func FromFlags(base Config, args []string) (Config, error) {
 			base.Adapter = strings.TrimPrefix(a, "--adapter=")
 		case strings.HasPrefix(a, "--sysrepo-socket="):
 			base.SysrepoSocket = strings.TrimPrefix(a, "--sysrepo-socket=")
+		case strings.HasPrefix(a, "--sysrepo-dir="):
+			base.SysrepoDir = strings.TrimPrefix(a, "--sysrepo-dir=")
 		case strings.HasPrefix(a, "--plugins-dir="):
 			base.Plugins.Dir = strings.TrimPrefix(a, "--plugins-dir=")
 		case strings.HasPrefix(a, "--plugin="):
@@ -140,6 +145,7 @@ Flags:
   --password=<pw>        Enable SSH password auth
   --adapter=<mock|sysrepo>  Select backend (default: sysrepo)
   --sysrepo-socket=<path>   sysrepo socket (for --adapter=sysrepo)
+  --sysrepo-dir=<path>      sysrepo repository path (default: /etc/sysrepo)
   --plugins-dir=<dir>    Directory with libsrplg-*.so
   --plugin=<name>        Allowlist a plugin (repeatable; empty = all)
 `

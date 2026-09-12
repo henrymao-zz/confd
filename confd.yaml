@@ -17,6 +17,7 @@ ssh:
 # Sysrepo backend
 adapter: sysrepo          # "sysrepo" (cgo, default) or "mock" (in-memory, for tests)
 sysrepo_socket: ""        # path to sysrepo SHM socket (empty = default)
+sysrepo_dir: ""           # path to sysrepo repository (empty = /etc/sysrepo)
 
 # Plugins (sysrepo-plugind replacement).
 # Each entry has a YANG module provisioning spec (yang_dir, modules,
