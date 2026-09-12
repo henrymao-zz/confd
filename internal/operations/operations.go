@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"os"
+	"log/slog"
 	"strings"
 
 	"github.com/example/confd/internal/data"
@@ -108,9 +108,9 @@ func BuildHandlers(deps Deps, sessionID uint64, peerUser string) map[string]tran
 		return func(msgID string, innerXML []byte) (any, error) {
 			rpcXML := fmt.Sprintf(`<rpc message-id="%s" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">%s</rpc>`,
 				msgID, string(innerXML))
-			fmt.Fprintf(os.Stderr, "DEBUG wrap: opName=%q rpcXML=%s\n", opName, rpcXML)
+			slog.Info("DEBUG wrap", "opName", opName, "rpcXML", rpcXML)
 			out := d.Handle(rctx, []byte(rpcXML))
-			fmt.Fprintf(os.Stderr, "DEBUG wrap: out=%s\n", string(out))
+			slog.Info("DEBUG wrap out", "out", string(out))
 			return extractRPCReplyInner(out), nil
 		}
 	}
