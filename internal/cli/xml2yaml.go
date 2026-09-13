@@ -14,16 +14,65 @@ import (
 // YANG key leaf names (name, ip, key, id, etc.) are rendered first in
 // each mapping, followed by remaining fields alphabetically.
 //
-// Config false nodes and dynamic neighbor/address entries are already
-// filtered server-side by cf_filter_config_false in cgo_stub.go.
+// Config false nodes are already filtered server-side by
+// cf_filter_config_false in cgo_stub.go (using libyang LYS_CONFIG_R).
+// Dynamic neighbor/address entries (origin != "static" or missing
+// origin on neighbors) are filtered client-side here.
 func xmlDataToYAML(xmlData []byte) (string, error) {
 	root := parseXML(xmlData)
+	filterDynamic(root)
 	node := buildYAMLNode(root.Children)
 	out, err := yaml.Marshal(node)
 	if err != nil {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// filterDynamic removes dynamic neighbor/address entries from the XML
+// tree. These are operational data (ARP/ND cache, DHCP addresses)
+// populated by plugins, not user-configured.
+//
+// - neighbor entries with origin != "static" (or missing origin) are
+//   removed — they're dynamic ARP/ND cache entries.
+// - address entries with origin != "static" (but only if origin is
+//   present; missing origin on address = keep, may be user-configured).
+// - origin leaf is removed (it's config false, already handled server-side
+//   but may still appear in filtered XML).
+func filterDynamic(node *xmlNode) {
+	var filtered []*xmlNode
+	for _, child := range node.Children {
+		if child.Name == "neighbor" {
+			origin := findChildText(child, "origin")
+			if origin != "static" {
+				continue // dynamic ARP/ND entry — skip
+			}
+		}
+		if child.Name == "address" {
+			origin := findChildText(child, "origin")
+			if origin != "" && origin != "static" {
+				continue // DHCP/SLAAC address — skip
+			}
+		}
+		// Remove origin leaf (config false, operational metadata)
+		if child.Name == "origin" {
+			continue
+		}
+		filterDynamic(child)
+		filtered = append(filtered, child)
+	}
+	node.Children = filtered
+}
+
+// findChildText returns the text content of a named child element,
+// or empty string if not found.
+func findChildText(node *xmlNode, name string) string {
+	for _, child := range node.Children {
+		if child.Name == name {
+			return child.Text
+		}
+	}
+	return ""
 }
 
 // keyPriority defines the rendering order for common YANG key leaf names.

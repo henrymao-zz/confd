@@ -14,46 +14,16 @@ package sysrepoadapter
 #include <string.h>
 
 // cf_filter_config_false recursively removes config false nodes from
-// a libyang data tree. For neighbor/address list entries, also checks
-// the origin child: if origin is not "static", removes the entry
-// (dynamic ARP/ND cache data). The origin check must happen BEFORE
-// config false nodes are removed, since origin itself is config false.
+// a libyang data tree using the LYS_CONFIG_R schema flag.
+// This handles all YANG modules generically — any node declared
+// "config false" in its YANG module is removed.
+// neighbor/address dynamic filtering is handled client-side in
+// xml2yaml.go (based on the origin child value).
 static void cf_filter_config_false(struct lyd_node *node) {
     if (!node) return;
     struct lyd_node *child = lyd_child(node);
     while (child) {
         struct lyd_node *next = child->next;
-        const char *name = LYD_NAME(child);
-
-        // For neighbor and address list entries, check origin child FIRST
-        // (origin is config false and will be removed later, so we must
-        // check its value before the config-false pass removes it).
-        // If origin is missing on neighbor entries, treat as dynamic
-        // (ARP/ND cache populated by plugin). Address entries without
-        // origin are kept (may be user-configured).
-        if (name && (strcmp(name, "neighbor") == 0 || strcmp(name, "address") == 0)) {
-            struct lyd_node *origin_node = NULL;
-            for (struct lyd_node *n = lyd_child(child); n; n = n->next) {
-                const char *nname = LYD_NAME(n);
-                if (nname && strcmp(nname, "origin") == 0) {
-                    origin_node = n;
-                    break;
-                }
-            }
-            if (origin_node) {
-                const char *origin_val = lyd_get_value(origin_node);
-                if (origin_val && strcmp(origin_val, "static") != 0) {
-                    lyd_free_tree(child);
-                    child = next;
-                    continue;
-                }
-            } else if (strcmp(name, "neighbor") == 0) {
-                // No origin child — neighbor without origin is dynamic
-                lyd_free_tree(child);
-                child = next;
-                continue;
-            }
-        }
 
         // Check if this node is config false (LYS_CONFIG_R = 0x02)
         if (child->schema && (child->schema->flags & 0x02)) {
