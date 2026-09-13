@@ -1,0 +1,6 @@
+.idea/
+confd-basic*.zip
+out
+cover.out
+coverage.out
+*.test

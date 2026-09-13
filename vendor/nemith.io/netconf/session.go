@@ -1,0 +1,717 @@
+package netconf
+
+import (
+	"bytes"
+	"context"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"slices"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"nemith.io/netconf/transport"
+)
+
+const (
+	NetconfNamespace      = "urn:ietf:params:xml:ns:netconf:base:1.0"
+	NotificationNamespace = "urn:ietf:params:xml:ns:netconf:notification:1.0"
+)
+
+var (
+	ErrClosed           = errors.New("closed connection")
+	ErrHandshakeTimeout = errors.New("handshake timeout")
+)
+
+// NotificationHandler is called when a notification message is received from
+// the server. The handler is called asynchronously in its own goroutine.
+// The Message contains the raw notification data and must be closed when done.
+// The context is cancelled when the session closes or encounters an error.
+//
+// If the handler returns an error, it will be logged but will not terminate
+// the session or stop future notifications from being delivered.
+type NotifHandlerFunc func(ctx context.Context, msg *Message)
+
+func (h NotifHandlerFunc) HandleNotification(ctx context.Context, msg *Message) {
+	h(ctx, msg)
+}
+
+type NotifHandler interface {
+	HandleNotification(ctx context.Context, msg *Message)
+}
+
+// DefaultHelloTimeout is the default timeout for the hello handshake.
+const DefaultHelloTimeout = 30 * time.Second
+
+type sessionConfig struct {
+	clientCaps   []string
+	logger       *slog.Logger
+	notifHandler NotifHandler
+	helloTimeout time.Duration
+}
+
+type SessionOption interface {
+	apply(*sessionConfig)
+}
+
+type capabilityOpt []string
+
+func (o capabilityOpt) apply(cfg *sessionConfig) {
+	cfg.clientCaps = []string(o)
+}
+
+func WithCapability(capabilities ...string) SessionOption {
+	return capabilityOpt(capabilities)
+}
+
+type loggerOpt struct {
+	logger *slog.Logger
+}
+
+func (o loggerOpt) apply(cfg *sessionConfig) {
+	cfg.logger = o.logger
+}
+
+// WithLogger sets a custom slog.Logger for the session.
+// If not provided, slog.Default() will be used.
+// To disable logging, pass slog.New(slog.NewTextHandler(io.Discard, nil)).
+func WithLogger(logger *slog.Logger) SessionOption {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return loggerOpt{logger: logger}
+}
+
+type notifHandlerOpt struct {
+	handler NotifHandler
+}
+
+func (o notifHandlerOpt) apply(cfg *sessionConfig) {
+	cfg.notifHandler = o.handler
+}
+
+// WithNotifiHandler sets a handler for notifications received from the
+// server. The handler will be called asynchronously for each notification.
+// See NotifiHandler documentation for details on error handling and
+// context cancellation.
+func WithNotifHandler(handler NotifHandler) SessionOption {
+	return notifHandlerOpt{handler: handler}
+}
+
+// WithNotifHandlerFunc allows passing in a function for notification handler instead
+// of a implementation of NotifHandler.
+func WithNotifHandlerFunc(handlerFunc func(context.Context, *Message)) SessionOption {
+	return notifHandlerOpt{handler: NotifHandlerFunc(handlerFunc)}
+}
+
+type helloTimeoutOpt time.Duration
+
+func (o helloTimeoutOpt) apply(cfg *sessionConfig) {
+	cfg.helloTimeout = time.Duration(o)
+}
+
+// WithHelloTimeout sets the timeout for the hello handshake exchange.
+// If not set, DefaultHelloTimeout (30 seconds) is used.
+// Set to 0 to disable the timeout (not recommended).
+func WithHelloTimeout(d time.Duration) SessionOption {
+	return helloTimeoutOpt(d)
+}
+
+// Session is represents a netconf session to a one given device.
+type Session struct {
+	tr           transport.Transport
+	sessionID    uint64
+	seq          atomic.Uint64
+	helloTimeout time.Duration
+
+	clientCaps CapabilitySet
+	serverCaps CapabilitySet
+
+	mu   sync.Mutex
+	reqs map[string]*pendingResp
+
+	// outQ serializes outbound messages since the transport
+	// only allows one active writer at a time
+	outQ chan *writeReq
+
+	// closing is closed when Close() is called, signaling session shutdown
+	closing chan struct{}
+
+	// sendDone is closed when sendLoop exits
+	sendDone chan struct{}
+
+	// closeOnce ensures Close() logic only runs once
+	closeOnce sync.Once
+
+	notifHandler NotifHandler
+	notifCtx     context.Context
+	notifCancel  context.CancelFunc
+
+	logger *slog.Logger
+}
+
+func newSession(transport transport.Transport, opts ...SessionOption) *Session {
+	cfg := sessionConfig{
+		clientCaps:   DefaultCapabilities,
+		logger:       slog.Default(),
+		helloTimeout: DefaultHelloTimeout,
+	}
+
+	for _, opt := range opts {
+		opt.apply(&cfg)
+	}
+
+	notifCtx, notifCancel := context.WithCancel(context.Background())
+
+	s := &Session{
+		tr:           transport,
+		clientCaps:   NewCapabilitySet(cfg.clientCaps...),
+		reqs:         make(map[string]*pendingResp),
+		outQ:         make(chan *writeReq),
+		closing:      make(chan struct{}),
+		sendDone:     make(chan struct{}),
+		notifHandler: cfg.notifHandler,
+		notifCtx:     notifCtx,
+		notifCancel:  notifCancel,
+		logger:       cfg.logger,
+		helloTimeout: cfg.helloTimeout,
+	}
+	return s
+}
+
+// NewSession will create a new Session with the given transport and open it with the
+// necessary hello messages.
+func NewSession(transport transport.Transport, opts ...SessionOption) (*Session, error) {
+	s := newSession(transport, opts...)
+
+	ctx := context.Background()
+	if s.helloTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, s.helloTimeout, ErrHandshakeTimeout)
+		defer cancel()
+	}
+
+	if err := s.handshake(ctx); err != nil {
+		if closeErr := s.tr.Close(); closeErr != nil {
+			s.logger.Warn("failed to close transport after handshake error", "error", closeErr)
+		}
+		return nil, err
+	}
+
+	go s.sendLoop()
+	go s.recvLoop()
+	return s, nil
+}
+
+// handshake exchanges handshake messages and reports if there are any errors.
+func (s *Session) handshake(ctx context.Context) error {
+	// If context times out or is cancelled, close the transport to unblock
+	// any pending read/write operations.
+	stop := context.AfterFunc(ctx, func() {
+		_ = s.tr.Close()
+	})
+	defer stop()
+
+	clientMsg := Hello{
+		Capabilities: slices.Collect(s.clientCaps.All()),
+	}
+
+	// Handshake happens before sendLoop starts, so we write directly
+	w, err := s.tr.MsgWriter()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("hello handshake: %w", ctx.Err())
+		}
+		return fmt.Errorf("failed to get hello message writer: %w", err)
+	}
+
+	if err := xml.NewEncoder(w).Encode(&clientMsg); err != nil {
+		_ = w.Close()
+		if ctx.Err() != nil {
+			return fmt.Errorf("hello handshake: %w", ctx.Err())
+		}
+		return fmt.Errorf("failed to write hello message: %w", err)
+	}
+
+	if err := w.Close(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("hello handshake: %w", ctx.Err())
+		}
+		return fmt.Errorf("failed to close hello message writer: %w", err)
+	}
+
+	r, err := s.tr.MsgReader()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("hello handshake: %w", ctx.Err())
+		}
+		return fmt.Errorf("failed to get hello message reader: %w", err)
+	}
+	defer func() {
+		_ = r.Close()
+	}()
+
+	var serverMsg Hello
+	if err := xml.NewDecoder(r).Decode(&serverMsg); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("hello handshake: %w", ctx.Err())
+		}
+		return fmt.Errorf("failed to read server hello message: %w", err)
+	}
+
+	if serverMsg.SessionID == 0 {
+		return fmt.Errorf("server did not return a session-id")
+	}
+
+	if len(serverMsg.Capabilities) == 0 {
+		return fmt.Errorf("server did not return any capabilities")
+	}
+
+	s.serverCaps = NewCapabilitySet(serverMsg.Capabilities...)
+	s.sessionID = serverMsg.SessionID
+
+	// upgrade the transport if we are on a larger version and the transport
+	// supports it.
+	if s.serverCaps.Has(CapNetConf11) && s.clientCaps.Has(CapNetConf11) {
+		if upgrader, ok := s.tr.(interface{ Upgrade() }); ok {
+			upgrader.Upgrade()
+		}
+	}
+
+	return nil
+}
+
+// SessionID returns the current session ID exchanged in the hello messages.
+// Will return 0 if there is no session ID.
+func (s *Session) SessionID() uint64 {
+	return s.sessionID
+}
+
+// ClientCaps will return the capabilities initialized with the session.
+func (s *Session) ClientCaps() *CapabilitySet {
+	return &s.clientCaps
+}
+
+// ServerCaps will return the capabilities returned by the server in
+// it's hello message.
+func (s *Session) ServerCaps() *CapabilitySet {
+	return &s.serverCaps
+}
+
+// startElement will walk though a xml.Decode until it finds a start element
+// and returns it.
+func startElement(d *xml.Decoder) (*xml.StartElement, error) {
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return nil, err
+		}
+
+		if start, ok := tok.(xml.StartElement); ok {
+			return &start, nil
+		}
+	}
+}
+
+type pendingResp struct {
+	msg chan *Message
+	ctx context.Context
+}
+
+// writeReq represents a queued write request
+type writeReq struct {
+	writeFn func(io.Writer) error
+	done    chan error
+	ctx     context.Context
+}
+
+type msgReader struct {
+	io.Reader
+	closer io.Closer
+
+	done chan struct{}
+	once sync.Once
+}
+
+func (r *msgReader) Close() error {
+	var err error
+	r.once.Do(func() {
+		err = r.closer.Close()
+		close(r.done)
+	})
+	return err
+}
+
+// queueSend queues a message for writing and waits for completion.
+// Returns an error if the write fails or context is cancelled.
+func (s *Session) queueSend(ctx context.Context, marshal func(io.Writer) error) error {
+	// Check if we're closed before attempting to send
+	select {
+	case <-s.closing:
+		return ErrClosed
+	default:
+	}
+
+	done := make(chan error, 1)
+	req := &writeReq{
+		writeFn: marshal,
+		done:    done,
+		ctx:     ctx,
+	}
+
+	select {
+	case s.outQ <- req:
+		// Successfully queued, wait for result
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	case <-s.closing:
+		// Session is closing, stop accepting sends
+		return ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// sendMsg writes a message to the transport. Only one write is allowed at a time.
+// This method assumes it has exclusive access to MsgWriter().
+func (s *Session) sendMsg(marshal func(io.Writer) error) (err error) {
+	w, err := s.tr.MsgWriter()
+	if err != nil {
+		return fmt.Errorf("failed to get message writer: %w", err)
+	}
+	defer func() {
+		if closeErr := w.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("failed to flush message: %w", closeErr)
+		}
+	}()
+
+	return marshal(w)
+}
+
+// sendLoop processes the outbound write queue, ensuring only one message
+// is written to the transport at a time.
+func (s *Session) sendLoop() {
+	defer close(s.sendDone)
+
+	for outMsg := range s.outQ {
+		// Check if context was cancelled while queued
+		select {
+		case <-outMsg.ctx.Done():
+			outMsg.done <- outMsg.ctx.Err()
+			continue
+		default:
+		}
+
+		// Send the message and report result
+		outMsg.done <- s.sendMsg(outMsg.writeFn)
+	}
+}
+
+// recvLoop is the main receive loop.  It runs concurrently to be able to handle
+// interleaved messages (like notifications).
+func (s *Session) recvLoop() {
+	// buffer used to "peel" into the message enough to read the first element
+	// (i.e <rpc-reply> or <notification>)
+	buf := make([]byte, 4096)
+	for {
+		if err := s.recvMsg(buf); err != nil {
+			// Only log errors for unexpected failures (not graceful shutdown)
+			select {
+			case <-s.closing:
+				// Graceful shutdown, don't log
+			default:
+				if !errors.Is(err, io.EOF) {
+					s.logger.Error("failed to receive message", "error", err)
+				}
+			}
+			break
+		}
+	}
+
+	// Final cleanup when the loop exits
+	s.mu.Lock()
+	for _, req := range s.reqs {
+		close(req.msg)
+	}
+	s.mu.Unlock()
+
+	_ = s.tr.Close()
+
+	select {
+	case <-s.closing:
+		// Graceful shutdown
+	default:
+		s.logger.Warn("connection closed unexpectedly")
+	}
+}
+
+func getMessageID(attrs []xml.Attr) string {
+	for _, attr := range attrs {
+		if attr.Name.Local == "message-id" {
+			return attr.Value
+		}
+	}
+	return ""
+}
+
+func (s *Session) recvMsg(buf []byte) error {
+	r, err := s.tr.MsgReader()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := r.Close(); err != nil {
+			s.logger.Warn("failed to close message reader", "error", err)
+		}
+	}()
+
+	// 3. Peek/Read the start of the message
+	n, err := r.Read(buf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+
+	chunk := buf[:n]
+	decoder := xml.NewDecoder(bytes.NewReader(chunk))
+
+	startElem, err := startElement(decoder)
+	if err != nil {
+		return fmt.Errorf("failed to parse message start: %w", err)
+	}
+
+	combinedReader := io.MultiReader(bytes.NewReader(chunk), r)
+
+	switch startElem.Name {
+	case xml.Name{Space: NetconfNamespace, Local: "rpc-reply"}:
+		msgID := getMessageID(startElem.Attr)
+		if msgID == "" {
+			s.logger.Warn("rpc-reply missing message-id")
+			return nil // Continue loop
+		}
+
+		s.mu.Lock()
+		req, ok := s.reqs[msgID]
+		delete(s.reqs, msgID)
+		s.mu.Unlock()
+
+		if !ok {
+			s.logger.Warn("unexpected rpc-reply", "message-id", msgID, "note", "possible timeout")
+			return nil // Continue loop
+		}
+
+		readDone := make(chan struct{})
+		reader := &msgReader{
+			Reader: combinedReader,
+			closer: r, // The raw transport reader
+			done:   readDone,
+		}
+
+		select {
+		case req.msg <- &Message{
+			reader:     reader,
+			messageID:  &msgID,
+			Attributes: startElem.Attr,
+		}:
+			// We wait for the user to call Close() on the replyReader.
+			<-readDone
+			return nil
+
+		case <-req.ctx.Done():
+			return nil
+		}
+
+	case xml.Name{Space: NotificationNamespace, Local: "notification"}:
+		if s.notifHandler == nil {
+			s.logger.Warn("received notification but no handler configured")
+			return nil
+		}
+
+		// Create a reader for the notification that will close the transport reader
+		readDone := make(chan struct{})
+		reader := &msgReader{
+			Reader: combinedReader,
+			closer: r,
+			done:   readDone,
+		}
+
+		// Call handler asynchronously to avoid blocking the receive loop
+		go s.handleNotification(reader, startElem.Attr)
+
+		// Wait for handler to finish reading/closing the message
+		<-readDone
+		return nil
+
+	default:
+		return fmt.Errorf("netconf: unknown message type: %s", startElem.Name.Local)
+	}
+}
+
+// handleNotification invokes the notification handler asynchronously.
+// It ensures the message is properly closed and logs any errors from the handler.
+func (s *Session) handleNotification(reader *msgReader, attrs []xml.Attr) {
+	msg := &Message{
+		reader:     reader,
+		Attributes: attrs,
+	}
+
+	s.notifHandler.HandleNotification(s.notifCtx, msg)
+
+	// Ensure the message is closed even if handler didn't close it
+	if err := msg.Close(); err != nil && !errors.Is(err, io.EOF) {
+		s.logger.Warn("failed to close notification message", "error", err)
+	}
+}
+
+func (s *Session) nextMessageID() string {
+	return strconv.FormatUint(s.seq.Add(1), 10)
+}
+
+// Prepare will prepare the given rpc by assigning it a message-id if it
+// doesn't have one already.
+func (s *Session) Prepare(rpc *RPC) *RPC {
+	if rpc.MessageID == "" {
+		rpc = rpc.Clone()
+		rpc.MessageID = s.nextMessageID()
+	}
+
+	return rpc
+}
+
+// Do will send the given rpc message and wait for the response message.
+func (s *Session) Do(ctx context.Context, rpc *RPC) (*Message, error) {
+	rpc = s.Prepare(rpc)
+
+	// Setup request/reply channel
+	ch := make(chan *Message, 1)
+
+	s.mu.Lock()
+	_, ok := s.reqs[rpc.MessageID]
+	if ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("rpc with message-id %q is already pending", rpc.MessageID)
+	}
+
+	s.reqs[rpc.MessageID] = &pendingResp{
+		msg: ch,
+		ctx: ctx,
+	}
+	s.mu.Unlock()
+
+	// Cleanup if context triggers before send/recv
+	defer func() {
+		s.mu.Lock()
+		delete(s.reqs, rpc.MessageID)
+		s.mu.Unlock()
+	}()
+
+	// Send through the queue - marshal function avoids buffer allocation
+	if err := s.queueSend(ctx, func(w io.Writer) error {
+		return xml.NewEncoder(w).Encode(rpc)
+	}); err != nil {
+		return nil, err
+	}
+
+	// Wait for the response
+	select {
+	case resp, ok := <-ch:
+		if !ok {
+			return nil, ErrClosed
+		}
+		return resp, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// Exec issues a rpc message with `op` as the body and decodes the response into
+// a pointer at `reply`. The Reply must include the full <rpc-reply> structure.
+func (s *Session) Exec(ctx context.Context, op any, reply any) error {
+	rpc := NewRPC(op)
+	msg, err := s.Do(ctx, rpc)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = msg.Close()
+	}()
+
+	raw, err := io.ReadAll(msg)
+	if err != nil {
+		return fmt.Errorf("failed to read reply: %w", err)
+	}
+
+	var rpcReply RPCReply
+	if err := xml.Unmarshal(raw, &rpcReply); err != nil {
+		return fmt.Errorf("failed to parse rpc-reply: %w", err)
+	}
+	// filter out warnings
+	rpcErrors := rpcReply.RPCErrors.Filter(SevError)
+	if len(rpcErrors) > 0 {
+		return rpcErrors
+	}
+
+	if reply != nil {
+		if err := xml.Unmarshal(raw, reply); err != nil {
+			return fmt.Errorf("failed to decode response: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Close will gracefully close the sessions first by sending a `close-session`
+// operation to the remote and then closing the underlying transport
+func (s *Session) Close(ctx context.Context) error {
+	var closeErr error
+
+	s.closeOnce.Do(func() {
+		// Cancel notification context to signal handlers to stop
+		s.notifCancel()
+
+		type closeSession struct {
+			XMLName xml.Name `xml:"close-session"`
+		}
+
+		// This may fail so save the error but still close the underlying transport.
+		req := NewRPC(&closeSession{})
+		resp, _ := s.Do(ctx, req)
+		if resp != nil {
+			_ = resp.Close()
+		}
+
+		// Signal session is closing - this stops new sends from being queued
+		close(s.closing)
+
+		// Now safe to close outQ since no new sends can reach it
+		close(s.outQ)
+
+		// Wait for sendLoop to exit
+		select {
+		case <-s.sendDone:
+			// sendLoop finished cleanly
+		case <-ctx.Done():
+			// Context expired - close transport immediately
+			s.logger.Warn("close context expired before sendLoop finished", "error", ctx.Err())
+		}
+
+		// Close the connection and ignore errors if the remote side hung up first.
+		if err := s.tr.Close(); err != nil &&
+			!errors.Is(err, net.ErrClosed) &&
+			!errors.Is(err, io.EOF) &&
+			!errors.Is(err, syscall.EPIPE) {
+			closeErr = err
+		}
+	})
+
+	return closeErr
+}

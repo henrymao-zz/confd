@@ -1,9 +1,12 @@
 confd (0.1.0-1) noble; urgency=medium
 
-  * Initial Debian packaging.
+  * Initial release.
   * Go-based NETCONF server backed by sysrepo.
-  * Includes libyang v5.8.6, sysrepo v5.1.0, and Telekom sysrepo-plugins.
+  * Includes libyang v5.8.6, sysrepo v5.1.0, Telekom sysrepo-plugins.
+  * Bundled procps v3.3.17 for os-metrics plugin (Ubuntu 26.04 compat).
+  * All dependencies bundled — no network access required during build.
   * Interactive CLI shell with YAML config rendering.
   * Auto-connect to local server at launch.
+  * Auto-discovery of plugins and YANG modules.
 
- -- Henry Mao <henry.mao@canonical.com>  Sat, 12 Sep 2026 18:00:00 +0800
+ -- Henry Mao <henry.mao@canonical.com>  Sat, 13 Sep 2026 14:00:00 +0800

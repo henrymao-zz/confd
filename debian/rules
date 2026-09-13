@@ -9,11 +9,9 @@ STAGING_FLAGS := -I$(STAGING)/usr/include -L$(STAGING_LIB) -L$(STAGING)/usr/lib
 	dh $@
 
 override_dh_auto_configure:
-	# Build procps v3.3.17 (provides proc/readproc.h + libprocps.so
-	# which Ubuntu 26.04's libproc2-dev does not provide)
-	cd /tmp && rm -rf procps && \
-		git clone --depth=1 --branch=v3.3.17 https://gitlab.com/procps-ng/procps && \
-		cd procps && ./autogen.sh && \
+	# Build procps v3.3.17 from vendored source (provides proc/readproc.h
+	# + libprocps.so which Ubuntu 26.04's libproc2-dev does not provide)
+	cd src/procps && ./autogen.sh && \
 		./configure --disable-nls --prefix=/usr && \
 		make -j$$(nproc) && \
 		make install DESTDIR=$(STAGING)
@@ -80,8 +78,8 @@ override_dh_auto_configure:
 		make -j$$(nproc)
 
 override_dh_auto_build:
-	# Build Go binary against staging libs (using host Go module cache via mount)
-	GOMODCACHE=/mnt/go-cache/pkg/mod GOPROXY=off \
+	# Build Go binary using vendored modules (no network needed)
+	GOFLAGS=-mod=vendor \
 	PKG_CONFIG_PATH=$(STAGING_PKGCONFIG) \
 	CGO_CFLAGS="-I$(STAGING)/usr/include" \
 	CGO_LDFLAGS="-L$(STAGING_LIB) -L$(STAGING)/usr/lib -lsysrepo -lyang" \
@@ -89,7 +87,7 @@ override_dh_auto_build:
 
 override_dh_auto_test:
 	# Run Go tests (without sysrepo tag — mock adapter)
-	go test -count=1 ./... -timeout 15s || true
+	GOFLAGS=-mod=vendor go test -count=1 ./... -timeout 15s || true
 
 override_dh_auto_install:
 	# Install confd binary
@@ -152,5 +150,4 @@ override_dh_auto_clean:
 	rm -rf src/libyang/build src/sysrepo/build src/libyang-cpp/build \
 		src/sysrepo-cpp/build src/umgmt/build src/sysrepo-plugins/build
 	rm -rf debian/staging
-	rm -rf /tmp/procps
 	rm -f confd
