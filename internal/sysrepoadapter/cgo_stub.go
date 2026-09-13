@@ -13,9 +13,58 @@ package sysrepoadapter
 #include <dirent.h>
 #include <string.h>
 
+// cf_filter_config_false recursively removes config false nodes from
+// a libyang data tree. For neighbor/address list entries, also checks
+// the origin child: if origin is not "static", removes the entry
+// (dynamic ARP/ND cache data).
+static void cf_filter_config_false(struct lyd_node *node) {
+    if (!node) return;
+    struct lyd_node *child = lyd_child(node);
+    while (child) {
+        struct lyd_node *next = child->next;
+        const char *name = LYD_NAME(child);
+
+        // Check if this node is config false (LYS_CONFIG_R = 0x02)
+        if (child->schema && (child->schema->flags & 0x02)) {
+            // origin leaf is config false but we need its value first
+            // for neighbor/address filtering (handled below before we
+            // reach this point). Just free it.
+            lyd_free_tree(child);
+            child = next;
+            continue;
+        }
+
+        // For neighbor and address list entries, check origin child
+        if (name && (strcmp(name, "neighbor") == 0 || strcmp(name, "address") == 0)) {
+            struct lyd_node *origin_node = NULL;
+            for (struct lyd_node *n = lyd_child(child); n; n = n->next) {
+                const char *nname = LYD_NAME(n);
+                if (nname && strcmp(nname, "origin") == 0) {
+                    origin_node = n;
+                    break;
+                }
+            }
+            if (origin_node) {
+                const char *origin_val = lyd_get_value(origin_node);
+                if (origin_val && strcmp(origin_val, "static") != 0) {
+                    // Dynamic entry — remove entire node
+                    lyd_free_tree(child);
+                    child = next;
+                    continue;
+                }
+            }
+        }
+
+        // Recurse into children
+        cf_filter_config_false(child);
+        child = next;
+    }
+}
+
 // cf_get_data_xml calls sr_get_data to retrieve a libyang data tree,
 // then uses lyd_print_mem to serialize it to XML. Returns the XML string
 // (caller must free with free()) or empty string for no data, or NULL on error.
+// Config false nodes and dynamic neighbor/address entries are filtered out.
 static char *cf_get_data_xml(sr_session_ctx_t *session, const char *xpath) {
     sr_data_t *data = NULL;
     int rc = sr_get_data(session, xpath, 0, 0, 0, &data);
@@ -29,6 +78,8 @@ static char *cf_get_data_xml(sr_session_ctx_t *session, const char *xpath) {
         if (data) sr_release_data(data);
         return strdup("");
     }
+    // Filter config false nodes and dynamic entries
+    cf_filter_config_false(data->tree);
     char *xml = NULL;
     rc = lyd_print_mem(&xml, data->tree, LYD_XML, 0);
     sr_release_data(data);
