@@ -78,13 +78,17 @@ func findChildText(node *xmlNode, name string) string {
 // keyPriority defines the rendering order for common YANG key leaf names.
 // Keys listed here are rendered first (in this order), then all other
 // fields alphabetically.
+// Top-level container names (system, interfaces) are also prioritized to
+// control the rendering order of top-level modules.
 var keyPriority = map[string]int{
-	"name":      0,
-	"ip":        1,
-	"key":       2,
-	"id":        3,
-	"identifier": 4,
-	"vlan-id":   5,
+	"system":      -1,
+	"interfaces":  0,
+	"name":        1,
+	"ip":          2,
+	"key":         3,
+	"id":          4,
+	"identifier":  5,
+	"vlan-id":     6,
 }
 
 // xmlNode is an intermediate representation for the XML tree.
