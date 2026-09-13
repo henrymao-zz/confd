@@ -1,6 +1,6 @@
 [submodule "sysrepo-plugins"]
 	path = src/sysrepo-plugins
-	url = https://github.com/telekom/sysrepo-plugins.git
+	url = https://github.com/henrymao-zz/sysrepo-plugins.git
 [submodule "src/libyang"]
 	path = src/libyang
 	url = https://github.com/CESNET/libyang.git
