@@ -19,7 +19,14 @@ Build-Depends: debhelper-compat (= 13),
  libproc2-dev,
  nlohmann-json3-dev,
  doctest-dev,
- git
+ git,
+ autopoint,
+ autoconf,
+ automake,
+ libtool-bin,
+ gettext,
+ libncurses-dev,
+ libnuma-dev
 Standards-Version: 4.7.0
 Homepage: https://github.com/henrymao-zz/confd
 

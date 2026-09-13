@@ -9,6 +9,14 @@ STAGING_FLAGS := -I$(STAGING)/usr/include -L$(STAGING_LIB) -L$(STAGING)/usr/lib
 	dh $@
 
 override_dh_auto_configure:
+	# Build procps v3.3.17 (provides proc/readproc.h + libprocps.so
+	# which Ubuntu 26.04's libproc2-dev does not provide)
+	cd /tmp && rm -rf procps && \
+		git clone --depth=1 --branch=v3.3.17 https://gitlab.com/procps-ng/procps && \
+		cd procps && ./autogen.sh && \
+		./configure --disable-nls --prefix=/usr && \
+		make -j$$(nproc) && \
+		make install DESTDIR=$(STAGING)
 	# Build libyang (install to staging via DESTDIR)
 	cd src/libyang && mkdir -p build && cd build && \
 		cmake -DCMAKE_BUILD_TYPE=Release \
@@ -55,14 +63,16 @@ override_dh_auto_configure:
 			-DCMAKE_C_FLAGS="-I$(CURDIR)/src/umgmt/deps/uthash/src" .. && \
 		make -j$$(nproc) && \
 		make install DESTDIR=$(STAGING)
-	# Build sysrepo-plugins
+	# Build sysrepo-plugins (with os-metrics enabled using procps from staging)
 	cd src/sysrepo-plugins && mkdir -p build && cd build && \
 		PKG_CONFIG_PATH=$(STAGING_PKGCONFIG) \
 		LD_LIBRARY_PATH=$(STAGING_LIB):$(STAGING)/usr/lib \
-		cmake -DSYSTEMD_IFINDEX=1 -DBUILD_OS_METRICS_PLUGIN=OFF \
+		cmake -DSYSTEMD_IFINDEX=1 -DBUILD_OS_METRICS_PLUGIN=ON \
 			-DCMAKE_PREFIX_PATH=$(STAGING)/usr \
 			-DCMAKE_C_FLAGS="$(STAGING_FLAGS)" \
 			-DCMAKE_CXX_FLAGS="$(STAGING_FLAGS)" \
+			-DPROCPS_INCLUDE_DIR=$(STAGING)/usr/include \
+			-DPROCPS_LIBRARY=$(STAGING)/usr/lib/libprocps.so \
 			-DCMAKE_SKIP_RPATH=OFF \
 			-DCMAKE_INSTALL_RPATH=$(STAGING_LIB) \
 			-DCMAKE_BUILD_RPATH=$(STAGING_LIB) .. && \
@@ -96,6 +106,8 @@ override_dh_auto_install:
 	cp $(STAGING)/usr/lib/x86_64-linux-gnu/libyang-cpp.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
 	cp $(STAGING)/usr/lib/x86_64-linux-gnu/libsysrepo-cpp.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
 	cp $(STAGING)/usr/lib/libumgmt.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
+	# Install libprocps from procps v3.3.17 (for os-metrics plugin)
+	cp $(STAGING)/usr/lib/libprocps.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
 	# Install YANG module directories (libyang + sysrepo internal modules)
 	mkdir -p $(CURDIR)/debian/confd/usr/share
 	cp -a $(STAGING)/usr/share/yang $(CURDIR)/debian/confd/usr/share/yang
@@ -140,4 +152,5 @@ override_dh_auto_clean:
 	rm -rf src/libyang/build src/sysrepo/build src/libyang-cpp/build \
 		src/sysrepo-cpp/build src/umgmt/build src/sysrepo-plugins/build
 	rm -rf debian/staging
+	rm -rf /tmp/procps
 	rm -f confd
