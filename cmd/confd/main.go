@@ -230,7 +230,43 @@ if err != nil {
 	var phSpecs []pluginhost.Spec
 	pluginsDir := cfg.Plugins.Dir
 	for _, s := range specs {
-		path := filepath.Join(pluginsDir, "libsrplg-"+s.Name+".so")
+		// The .so file name may not match the YANG directory name.
+		// YANG dirs are like "ietf-interfaces-plugin" but .so files
+		// are like "libsrplg-ietf-interfaces.so". Try full name first,
+		// then strip "-plugin" suffix, then try the short name.
+		candidates := []string{
+			filepath.Join(pluginsDir, "libsrplg-"+s.Name+".so"),
+		}
+		if strings.HasSuffix(s.Name, "-plugin") {
+			short := strings.TrimSuffix(s.Name, "-plugin")
+			candidates = append(candidates,
+				filepath.Join(pluginsDir, "libsrplg-"+short+".so"),
+			)
+		}
+		// Also try replacing "ieee802-dot1q-bridge" with "ieee-bridge"
+		if strings.HasPrefix(s.Name, "ieee802-dot1q-bridge") {
+			short := strings.Replace(s.Name, "ieee802-dot1q-bridge", "ieee-bridge", 1)
+			candidates = append(candidates,
+				filepath.Join(pluginsDir, "libsrplg-"+short+".so"),
+			)
+			short2 := strings.Replace(
+				strings.TrimSuffix(s.Name, "-plugin"),
+				"ieee802-dot1q-bridge", "ieee-bridge", 1)
+			candidates = append(candidates,
+				filepath.Join(pluginsDir, "libsrplg-"+short2+".so"),
+			)
+		}
+		var path string
+		for _, p := range candidates {
+			if _, err := os.Stat(p); err == nil {
+				path = p
+				break
+			}
+		}
+		if path == "" {
+			// .so not found — skip plugin host but keep YANG spec
+			continue
+		}
 		phSpecs = append(phSpecs, pluginhost.Spec{Name: s.Name, Path: path})
 	}
 
