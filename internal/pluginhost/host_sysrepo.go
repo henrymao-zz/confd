@@ -47,7 +47,11 @@ static int cf_plugin_load(const char *path, void *conn,
                           void **handle_out,
                           void **sess_out, void **priv_out) {
     void *h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
-    if (!h) return -1;
+    if (!h) {
+        const char *err = dlerror();
+        if (err) fprintf(stderr, "pluginhost: dlopen failed for %s: %s\n", path, err);
+        return -1;
+    }
 
     sr_session_ctx_t *sess = NULL;
     int rc = sr_session_start((sr_conn_ctx_t *)conn, SR_DS_RUNNING, &sess);
