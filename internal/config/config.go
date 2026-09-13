@@ -38,13 +38,19 @@ type SSHConfig struct {
 type PluginsConfig struct {
 	// Dir is the directory containing libsrplg-*.so plugin artifacts.
 	Dir string `yaml:"dir"`
-	// Entries is the list of plugins to load with their YANG provisioning
-	// specs. Each entry has a name (matched to libsrplg-<name>.so),
-	// a yang_dir, modules list, and optional features.
-	Entries []yangprov.PluginSpec `yaml:"entries"`
-	// Names is an allowlist of plugin names (empty = load all entries).
-	// If non-empty, only entries whose Name matches are loaded.
+	// YangDir is the base directory for YANG files (auto mode).
+	// Defaults to /usr/lib/confd/yang.
+	YangDir string `yaml:"yang_dir"`
+	// Mode controls plugin discovery: "auto" (default) or "manual".
+	// In "auto" mode, confd discovers .so files from Dir and YANG
+	// specs from YangDir automatically. In "manual" mode, uses Entries.
+	Mode string `yaml:"mode"`
+	// Names is an allowlist of plugin names (empty = load all).
+	// Works in both auto and manual modes.
 	Names []string `yaml:"names"`
+	// Entries is the list of plugins to load with their YANG provisioning
+	// specs. Only used when Mode is "manual".
+	Entries []yangprov.PluginSpec `yaml:"entries"`
 }
 
 // Default returns the default configuration.
@@ -54,6 +60,10 @@ func Default() Config {
 			Bind: "0.0.0.0:830",
 		},
 		Adapter: "sysrepo",
+		Plugins: PluginsConfig{
+			Mode:    "auto",
+			YangDir: "/usr/lib/confd/yang",
+		},
 	}
 }
 

@@ -66,9 +66,9 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 
 	// --- YANG provisioning (before plugin host start) --------------------
-	// If YANG provisioning specs are configured (from confd.yaml entries),
-	// provision YANG modules into sysrepo and load them into the goyang
-	// cache so capabilities match.
+	// YangProvSpecs are populated by main.go in either "auto" or "manual"
+	// mode. In auto mode, specs come from yangprov.AutoDiscover(). In
+	// manual mode, specs come from confd.yaml entries.
 	if len(cfg.YangProvSpecs) > 0 {
 		prov := yangprov.New(conn)
 		if err := prov.Provision(ctx, cfg.YangProvSpecs); err != nil {
@@ -80,21 +80,8 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 			slog.Warn("server: YANG cache load failed", "error", err)
 		}
 	} else {
-		// No manifest entries: auto-discover YANG from the plugins
-		// directory's yang/ subdirectories and provision them into
-		// sysrepo (install modules + enable features).
-		yangBaseDir := "/usr/lib/confd/yang"
-		autoSpecs := yangprov.AutoDiscover(yangBaseDir)
-		if len(autoSpecs) > 0 {
-			prov := yangprov.New(conn)
-			if err := prov.Provision(ctx, autoSpecs); err != nil {
-				slog.Warn("server: auto YANG provisioning failed", "error", err)
-			} else {
-				slog.Info("server: auto YANG modules provisioned", "specs", len(autoSpecs))
-			}
-		}
-		// Load all YANG from sysrepo's installed modules directory
-		// (includes both base sysrepo modules and newly installed ones).
+		// No provisioning specs: load YANG from sysrepo's installed
+		// modules directory for capabilities + get-schema.
 		loadYangFromSysrepo(ctx, conn, cache)
 	}
 

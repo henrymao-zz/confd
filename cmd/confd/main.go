@@ -189,30 +189,48 @@ if err != nil {
 		return fmt.Errorf("unknown adapter: %s", cfg.Adapter)
 	}
 
-	// --- plugin specs (from YAML entries, or auto-discover from --plugins-dir) ---
-	var specs []yangprov.PluginSpec
-	if len(cfg.Plugins.Entries) > 0 {
-		// Use entries from the YAML config.
-		specs = filterPluginSpecs(cfg.Plugins.Entries, cfg.Plugins.Names)
-	} else if cfg.Plugins.Dir != "" {
-		// No YAML entries; auto-discover .so files from --plugins-dir.
-		phSpecs, err := discoverPlugins(cfg.Plugins.Dir, cfg.Plugins.Names)
-		if err != nil {
-			return fmt.Errorf("discover plugins: %w", err)
-		}
-		for _, ps := range phSpecs {
-			specs = append(specs, yangprov.PluginSpec{Name: ps.Name})
-		}
+	// --- plugin specs (auto-discover or manual from YAML entries) ---
+	mode := cfg.Plugins.Mode
+	if mode == "" {
+		mode = "auto"
 	}
 
-	// Convert yangprov.PluginSpec to pluginhost.Spec for the plugin host.
-	var phSpecs []pluginhost.Spec
-	for _, s := range specs {
-		path := filepath.Join(cfg.Plugins.Dir, "libsrplg-"+s.Name+".so")
-		if s.YangDir != "" {
-			// If from YAML, the .so is in Plugins.Dir.
-			path = filepath.Join(cfg.Plugins.Dir, "libsrplg-"+s.Name+".so")
+	var specs []yangprov.PluginSpec
+	switch mode {
+	case "manual":
+		if len(cfg.Plugins.Entries) > 0 {
+			specs = filterPluginSpecs(cfg.Plugins.Entries, cfg.Plugins.Names)
 		}
+	case "auto":
+		yangDir := cfg.Plugins.YangDir
+		if yangDir == "" {
+			yangDir = "/usr/lib/confd/yang"
+		}
+		autoSpecs := yangprov.AutoDiscover(yangDir)
+		// Filter by names allowlist if set
+		if len(cfg.Plugins.Names) > 0 {
+			allowSet := make(map[string]bool, len(cfg.Plugins.Names))
+			for _, n := range cfg.Plugins.Names {
+				allowSet[n] = true
+			}
+			var filtered []yangprov.PluginSpec
+			for _, s := range autoSpecs {
+				if allowSet[s.Name] {
+					filtered = append(filtered, s)
+				}
+			}
+			autoSpecs = filtered
+		}
+		specs = autoSpecs
+	default:
+		return fmt.Errorf("unknown plugins mode: %s (use 'auto' or 'manual')", mode)
+	}
+
+	// Build plugin host specs from the .so directory
+	var phSpecs []pluginhost.Spec
+	pluginsDir := cfg.Plugins.Dir
+	for _, s := range specs {
+		path := filepath.Join(pluginsDir, "libsrplg-"+s.Name+".so")
 		phSpecs = append(phSpecs, pluginhost.Spec{Name: s.Name, Path: path})
 	}
 

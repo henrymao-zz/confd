@@ -19,104 +19,13 @@ adapter: sysrepo          # "sysrepo" (cgo, default) or "mock" (in-memory, for t
 sysrepo_socket: ""        # path to sysrepo SHM socket (empty = default)
 
 # Plugins (sysrepo-plugind replacement).
-# Each entry has a YANG module provisioning spec (yang_dir, modules,
-# features) that confd installs into sysrepo on startup, plus the
-# plugin .so path (dir). confd discovers libsrplg-<name>.so in the
-# plugin's dir and dlopens it.
+# In "auto" mode (default), confd discovers libsrplg-*.so files from
+# plugins.dir and YANG files from plugins.yang_dir automatically.
+# Features are parsed from YANG feature declarations.
+# In "manual" mode, use plugins.entries for explicit control.
 plugins:
-  dir: "/usr/lib/confd/plugins"   # directory containing libsrplg-*.so
-  entries:
-    # --- ietf-system ---
-    - name: ietf-system
-      yang_dir: /usr/lib/confd/yang/ietf-system-plugin
-      modules:
-        - iana-crypt-hash@2014-08-06.yang
-        - ietf-system@2014-08-06.yang
-      features:
-        ietf-system:
-          - timezone-name
-          - ntp
-          - authentication
-          - local-users
-
-    # --- ietf-interfaces ---
-    - name: ietf-interfaces
-      yang_dir: /usr/lib/confd/yang/ietf-interfaces-plugin
-      modules:
-        - iana-if-type@2017-01-19.yang
-        - ieee802-dot1q-types.yang
-        - ietf-if-extensions@2020-07-29.yang
-        - ietf-if-vlan-encapsulation@2020-07-13.yang
-        - ietf-inet-types@2013-07-15.yang
-        - ietf-interfaces@2018-02-20.yang
-        - ietf-ip@2018-02-22.yang
-        - ietf-yang-types@2013-07-15.yang
-      features:
-        ietf-interfaces:
-          - if-mib
-        ietf-if-extensions:
-          - sub-interfaces
-
-    # --- ietf-routing ---
-    - name: ietf-routing
-      yang_dir: /usr/lib/confd/yang/ietf-routing-plugin
-      modules:
-        - ietf-ipv4-unicast-routing@2018-03-13.yang
-        - ietf-ipv6-router-advertisements@2018-03-13.yang
-        - ietf-ipv6-unicast-routing@2018-03-13.yang
-        - ietf-routing@2018-03-13.yang
-      import_search_dirs:
-        - /usr/lib/confd/yang/ietf-routing
-
-    # --- ieee802-dot1q-bridge ---
-    - name: ieee802-dot1q-bridge
-      yang_dir: /usr/lib/confd/yang/ieee802-dot1q-bridge-plugin
-      modules:
-        - ieee802-dot1q-bridge.yang
-        - ieee802-dot1q-tpmr.yang
-        - ieee802-dot1q-types.yang
-        - ieee802-dot1q-vlan-bridge.yang
-        - ieee802-got1q-pb.yang
-        - ieee802-types.yang
-
-    # --- ietf-access-control-list ---
-    - name: ietf-access-control-list
-      yang_dir: /usr/lib/confd/yang/ietf-access-control-list-plugin
-      modules:
-        - ietf-access-control-list@2019-03-04.yang
-        - ietf-ethertypes@2019-03-04.yang
-        - ietf-packet-fields@2019-03-04.yang
-      features:
-        ietf-access-control-list:
-          - match-on-eth
-          - match-on-ipv4
-          - match-on-ipv6
-          - match-on-tcp
-          - match-on-udp
-          - match-on-icmp
-          - eth
-          - ipv4
-          - ipv6
-
-    # --- ietf-hardware ---
-    - name: ietf-hardware
-      yang_dir: /usr/lib/confd/yang/ietf-hardware-plugin
-      modules:
-        - iana-hardware.yang
-        - ietf-hardware.yang
-        - sensor-notifications-augment.yang
-      features:
-        ietf-hardware:
-          - hardware-sensor
-          - entity-mib
-
-    # --- os-metrics ---
-    # Disabled by default (requires libprocps on Ubuntu 26.04).
-    # Uncomment to enable:
-    # - name: os-metrics
-    #   yang_dir: /usr/lib/confd/yang/os-metrics-plugin
-    #   modules:
-    #     - os-metrics.yang
-    #   features:
-    #     os-metrics:
-    #       - usage-notifications
+  dir: "/usr/lib/confd/plugins"     # directory containing libsrplg-*.so
+  yang_dir: "/usr/lib/confd/yang"   # base directory for YANG files (auto mode)
+  mode: "auto"                       # "auto" (default) or "manual"
+  names: []                         # allowlist of plugin names (empty = all)
+  # entries: []                     # only used when mode: "manual"
