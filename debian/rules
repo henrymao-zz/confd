@@ -79,7 +79,11 @@ override_dh_auto_configure:
 
 override_dh_auto_build:
 	# Build Go binary using vendored modules (no network needed)
+	# Set GOCACHE/GOTMPDIR to writable dirs for PPA build environment
+	mkdir -p $(CURDIR)/debian/gocache $(CURDIR)/debian/gotmp
 	GOFLAGS=-mod=vendor \
+	GOCACHE=$(CURDIR)/debian/gocache \
+	GOTMPDIR=$(CURDIR)/debian/gotmp \
 	PKG_CONFIG_PATH=$(STAGING_PKGCONFIG) \
 	CGO_CFLAGS="-I$(STAGING)/usr/include" \
 	CGO_LDFLAGS="-L$(STAGING_LIB) -L$(STAGING)/usr/lib -lsysrepo -lyang" \
@@ -87,7 +91,11 @@ override_dh_auto_build:
 
 override_dh_auto_test:
 	# Run Go tests (without sysrepo tag — mock adapter)
-	GOFLAGS=-mod=vendor go test -count=1 ./... -timeout 15s || true
+	mkdir -p $(CURDIR)/debian/gocache $(CURDIR)/debian/gotmp
+	GOFLAGS=-mod=vendor \
+	GOCACHE=$(CURDIR)/debian/gocache \
+	GOTMPDIR=$(CURDIR)/debian/gotmp \
+	go test -count=1 ./... -timeout 15s || true
 
 override_dh_auto_install:
 	# Install confd binary
@@ -149,5 +157,5 @@ override_dh_auto_clean:
 	dh_auto_clean
 	rm -rf src/libyang/build src/sysrepo/build src/libyang-cpp/build \
 		src/sysrepo-cpp/build src/umgmt/build src/sysrepo-plugins/build
-	rm -rf debian/staging
+	rm -rf debian/staging debian/gocache debian/gotmp
 	rm -f confd

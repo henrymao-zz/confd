@@ -1,3 +1,10 @@
+confd (0.1.0-3) resolute; urgency=medium
+
+  * Fix Go build on PPA: set GOCACHE/GOTMPDIR to writable dirs.
+  * PPA build environment uses HOME=/sbuild-nonexistent which doesn't exist.
+
+ -- Henry Mao <henry.mao@canonical.com>  Sat, 13 Sep 2026 15:10:00 +0800
+
 confd (0.1.0-2) resolute; urgency=medium
 
   * Fix sdbus-c++ API compatibility for noble build.
