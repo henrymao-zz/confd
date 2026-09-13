@@ -13,14 +13,48 @@ import (
 // elements become YAML sequences, and leaf text values are auto-typed.
 // YANG key leaf names (name, ip, key, id, etc.) are rendered first in
 // each mapping, followed by remaining fields alphabetically.
+// Operational-state elements (neighbor, origin, statistics, etc.) are
+// suppressed to show only intended configuration.
 func xmlDataToYAML(xmlData []byte) (string, error) {
 	root := parseXML(xmlData)
+	filterOperational(root)
 	node := buildYAMLNode(root.Children)
 	out, err := yaml.Marshal(node)
 	if err != nil {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// operationalElements are YANG nodes that represent operational state
+// rather than intended configuration. They are suppressed in show
+// running/startup output to show only config data.
+var operationalElements = map[string]bool{
+	"neighbor":           true, // ARP/ND cache entries
+	"origin":             true, // address origin (static, dhcp, etc.)
+	"statistics":         true, // interface statistics
+	"oper-status":        true, // operational status
+	"phys-address":       true, // MAC address
+	"higher-layer-if":    true, // interface stacking
+	"lower-layer-if":     true, // interface stacking
+	"speed":              true, // link speed
+	"last-change":        true, // last state change time
+	"if-index":           true, // interface index
+	"discontinuity-time": true, // stats discontinuity time
+}
+
+// filterOperational removes operational-state child nodes from the
+// XML tree recursively.
+func filterOperational(node *xmlNode) {
+	var filtered []*xmlNode
+	for _, child := range node.Children {
+		if operationalElements[child.Name] {
+			continue
+		}
+		filterOperational(child)
+		filtered = append(filtered, child)
+	}
+	node.Children = filtered
 }
 
 // keyPriority defines the rendering order for common YANG key leaf names.
