@@ -32,7 +32,14 @@ Homepage: https://github.com/henrymao-zz/confd
 
 Package: confd
 Architecture: amd64
-Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Depends: ${misc:Depends}, adduser,
+ libnl-3-200,
+ libnl-route-3-200,
+ libnl-genl-3-200,
+ libnl-nf-3-200,
+ libnftables1,
+ libsdbus-c++2,
+ libsensors5
 Description: Go-based NETCONF server backed by sysrepo
  confd is a NETCONF server that uses sysrepo as its datastore backend.
  It provides RFC 6241 compliant NETCONF operations (get, get-config,

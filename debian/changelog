@@ -1,3 +1,12 @@
+confd (0.1.0-4) resolute; urgency=medium
+
+  * Fix plugin loading: add runtime dependencies for system libraries.
+  * Plugins need libnl-route-3-200, libnftables1, libsdbus-c++2, etc.
+  * Fix symlink preservation for bundled .so files (use cp -d).
+  * Add dlerror() logging when dlopen fails for debugging.
+
+ -- Henry Mao <henry.mao@canonical.com>  Sat, 13 Sep 2026 16:30:00 +0800
+
 confd (0.1.0-3) resolute; urgency=medium
 
   * Fix Go build on PPA: set GOCACHE/GOTMPDIR to writable dirs.

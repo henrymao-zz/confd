@@ -105,15 +105,15 @@ override_dh_auto_install:
 		install -D $(STAGING)/usr/bin/$$bin \
 			$(CURDIR)/debian/confd/usr/bin/$$bin 2>/dev/null || true; \
 	done
-	# Install shared libraries from staging
+	# Install shared libraries from staging (preserve symlinks with -d)
 	mkdir -p $(CURDIR)/debian/confd/usr/lib
-	cp $(STAGING)/usr/lib/x86_64-linux-gnu/libyang.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
-	cp $(STAGING)/usr/lib/x86_64-linux-gnu/libsysrepo.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
-	cp $(STAGING)/usr/lib/x86_64-linux-gnu/libyang-cpp.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
-	cp $(STAGING)/usr/lib/x86_64-linux-gnu/libsysrepo-cpp.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
-	cp $(STAGING)/usr/lib/libumgmt.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
+	cp -d $(STAGING)/usr/lib/x86_64-linux-gnu/libyang.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
+	cp -d $(STAGING)/usr/lib/x86_64-linux-gnu/libsysrepo.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
+	cp -d $(STAGING)/usr/lib/x86_64-linux-gnu/libyang-cpp.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
+	cp -d $(STAGING)/usr/lib/x86_64-linux-gnu/libsysrepo-cpp.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
+	cp -d $(STAGING)/usr/lib/libumgmt.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
 	# Install libprocps from procps v3.3.17 (for os-metrics plugin)
-	cp $(STAGING)/usr/lib/libprocps.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
+	cp -d $(STAGING)/usr/lib/libprocps.so* $(CURDIR)/debian/confd/usr/lib/ 2>/dev/null || true
 	# Install YANG module directories (libyang + sysrepo internal modules)
 	mkdir -p $(CURDIR)/debian/confd/usr/share
 	cp -a $(STAGING)/usr/share/yang $(CURDIR)/debian/confd/usr/share/yang
