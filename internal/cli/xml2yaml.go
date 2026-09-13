@@ -13,8 +13,8 @@ import (
 // elements become YAML sequences, and leaf text values are auto-typed.
 // YANG key leaf names (name, ip, key, id, etc.) are rendered first in
 // each mapping, followed by remaining fields alphabetically.
-// Operational-state elements (neighbor, origin, statistics, etc.) are
-// suppressed to show only intended configuration.
+// Operational-state elements are filtered to show only intended
+// configuration (see filterOperational for details).
 func xmlDataToYAML(xmlData []byte) (string, error) {
 	root := parseXML(xmlData)
 	filterOperational(root)
@@ -26,12 +26,9 @@ func xmlDataToYAML(xmlData []byte) (string, error) {
 	return string(out), nil
 }
 
-// operationalElements are YANG nodes that represent operational state
-// rather than intended configuration. They are suppressed in show
-// running/startup output to show only config data.
-var operationalElements = map[string]bool{
-	"neighbor":           true, // ARP/ND cache entries
-	"origin":             true, // address origin (static, dhcp, etc.)
+// alwaysSuppressed elements are YANG nodes that are always operational
+// state (config false) and should never appear in config output.
+var alwaysSuppressed = map[string]bool{
 	"statistics":         true, // interface statistics
 	"oper-status":        true, // operational status
 	"phys-address":       true, // MAC address
@@ -41,20 +38,43 @@ var operationalElements = map[string]bool{
 	"last-change":        true, // last state change time
 	"if-index":           true, // interface index
 	"discontinuity-time": true, // stats discontinuity time
+	"origin":             true, // origin leaf is always config false
 }
 
-// filterOperational removes operational-state child nodes from the
-// XML tree recursively.
+// filterOperational removes operational-state data from the XML tree:
+//  1. Always-suppressed elements (statistics, oper-status, etc.) are removed.
+//  2. neighbor entries with origin != "static" are removed (dynamic ARP/ND
+//     cache entries). Static entries (configured by user) are kept.
+//  3. address entries with origin != "static" are removed (DHCP, SLAAC,
+//     link-layer, random addresses). Static addresses are kept.
 func filterOperational(node *xmlNode) {
 	var filtered []*xmlNode
 	for _, child := range node.Children {
-		if operationalElements[child.Name] {
+		if alwaysSuppressed[child.Name] {
 			continue
+		}
+		// For neighbor and address lists, filter by origin value
+		if child.Name == "neighbor" || child.Name == "address" {
+			origin := findChildText(child, "origin")
+			if origin != "" && origin != "static" {
+				continue // skip dynamic entries
+			}
 		}
 		filterOperational(child)
 		filtered = append(filtered, child)
 	}
 	node.Children = filtered
+}
+
+// findChildText returns the text content of a named child element,
+// or empty string if not found.
+func findChildText(node *xmlNode, name string) string {
+	for _, child := range node.Children {
+		if child.Name == name {
+			return child.Text
+		}
+	}
+	return ""
 }
 
 // keyPriority defines the rendering order for common YANG key leaf names.
