@@ -16,7 +16,8 @@ package sysrepoadapter
 // cf_filter_config_false recursively removes config false nodes from
 // a libyang data tree. For neighbor/address list entries, also checks
 // the origin child: if origin is not "static", removes the entry
-// (dynamic ARP/ND cache data).
+// (dynamic ARP/ND cache data). The origin check must happen BEFORE
+// config false nodes are removed, since origin itself is config false.
 static void cf_filter_config_false(struct lyd_node *node) {
     if (!node) return;
     struct lyd_node *child = lyd_child(node);
@@ -24,17 +25,9 @@ static void cf_filter_config_false(struct lyd_node *node) {
         struct lyd_node *next = child->next;
         const char *name = LYD_NAME(child);
 
-        // Check if this node is config false (LYS_CONFIG_R = 0x02)
-        if (child->schema && (child->schema->flags & 0x02)) {
-            // origin leaf is config false but we need its value first
-            // for neighbor/address filtering (handled below before we
-            // reach this point). Just free it.
-            lyd_free_tree(child);
-            child = next;
-            continue;
-        }
-
-        // For neighbor and address list entries, check origin child
+        // For neighbor and address list entries, check origin child FIRST
+        // (origin is config false and will be removed later, so we must
+        // check its value before the config-false pass removes it).
         if (name && (strcmp(name, "neighbor") == 0 || strcmp(name, "address") == 0)) {
             struct lyd_node *origin_node = NULL;
             for (struct lyd_node *n = lyd_child(child); n; n = n->next) {
@@ -53,6 +46,13 @@ static void cf_filter_config_false(struct lyd_node *node) {
                     continue;
                 }
             }
+        }
+
+        // Check if this node is config false (LYS_CONFIG_R = 0x02)
+        if (child->schema && (child->schema->flags & 0x02)) {
+            lyd_free_tree(child);
+            child = next;
+            continue;
         }
 
         // Recurse into children
