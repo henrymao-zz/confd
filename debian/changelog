@@ -1,4 +1,11 @@
-confd (0.1.0-1) noble; urgency=medium
+confd (0.1.0-2) resolute; urgency=medium
+
+  * Fix sdbus-c++ API compatibility for noble build.
+  * Remove sdbus::ServiceName and sdbus::ObjectPath types (not in noble).
+
+ -- Henry Mao <henry.mao@canonical.com>  Sat, 13 Sep 2026 15:00:00 +0800
+
+confd (0.1.0-1) resolute; urgency=medium
 
   * Initial release.
   * Go-based NETCONF server backed by sysrepo.
