@@ -28,6 +28,9 @@ static void cf_filter_config_false(struct lyd_node *node) {
         // For neighbor and address list entries, check origin child FIRST
         // (origin is config false and will be removed later, so we must
         // check its value before the config-false pass removes it).
+        // If origin is missing on neighbor entries, treat as dynamic
+        // (ARP/ND cache populated by plugin). Address entries without
+        // origin are kept (may be user-configured).
         if (name && (strcmp(name, "neighbor") == 0 || strcmp(name, "address") == 0)) {
             struct lyd_node *origin_node = NULL;
             for (struct lyd_node *n = lyd_child(child); n; n = n->next) {
@@ -40,11 +43,15 @@ static void cf_filter_config_false(struct lyd_node *node) {
             if (origin_node) {
                 const char *origin_val = lyd_get_value(origin_node);
                 if (origin_val && strcmp(origin_val, "static") != 0) {
-                    // Dynamic entry — remove entire node
                     lyd_free_tree(child);
                     child = next;
                     continue;
                 }
+            } else if (strcmp(name, "neighbor") == 0) {
+                // No origin child — neighbor without origin is dynamic
+                lyd_free_tree(child);
+                child = next;
+                continue;
             }
         }
 
