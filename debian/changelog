@@ -1,3 +1,12 @@
+confd (0.1.0-6) resolute; urgency=medium
+
+  * Fix ietf-interfaces plugin crash on incomplete IPv6 neighbors.
+  * Switch sysrepo-plugins submodule to henrymao-zz fork (ubuntu-2604
+    branch) which fixes SR_ERR_INVAL_ARG when nl_addr2str returns "none"
+    for neighbors with no resolved link-layer address (NUD_INCOMPLETE).
+
+ -- Henry Mao <henry.mao@canonical.com>  Sun, 14 Sep 2026 00:00:00 +0800
+
 confd (0.1.0-5) resolute; urgency=medium
 
   * Fix libumgmt.so missing from package: umgmt installs to
