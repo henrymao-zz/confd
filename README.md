@@ -22,7 +22,7 @@ sudo apt install -y \
   golang-go cmake g++ pkg-config \
   libnl-3-dev libnl-route-3-dev libnl-genl-3-dev libnl-nf-3-dev \
   libsystemd-dev libsdbus-c++-dev libnftables-dev libsensors-dev \
-  libproc2-dev nlohmann-json3-dev doctest-dev
+  libproc2-dev libpcre2-dev nlohmann-json3-dev doctest-dev
 ```
 
 #### 2. Initialize git submodules
